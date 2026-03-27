@@ -1,0 +1,11 @@
+1. entity extractor from the add_memory.py page should be able to extract the entities from the text.
+2. Clear the Memories button should be able to clear the memories from the database.
+3. 
+
+
+
+
+To-DOs
+
+1. initialize_components is taking time to load the initialize_components
+2. 
