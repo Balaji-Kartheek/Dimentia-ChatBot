@@ -5,8 +5,9 @@ import streamlit as st
 import json
 import csv
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 from config import SessionKeys, SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE
+from auth_service import AuthService
 
 
 def render_settings_page():
@@ -146,7 +147,7 @@ def render_data_management(memory_system, db, user_role):
         if uploaded_file:
             import_memories(uploaded_file, memory_system, db)
     
-    st.markdown("##### Clear Data")
+    st.markdown("##### Clear Data (Two-Step Verification)")
     
     # Use session state to track confirmation
     if 'clear_confirmed' not in st.session_state:
@@ -157,18 +158,58 @@ def render_data_management(memory_system, db, user_role):
     
     if st.session_state['clear_confirmed']:
         st.warning("⚠️ This will permanently delete ALL memories!")
+        auth = AuthService(db)
+        user_id = st.session_state.get(SessionKeys.USER_ID)
+        username = st.session_state.get(SessionKeys.USERNAME, "")
+        reauth_password = st.text_input("Step 1: Re-enter password", type="password", key="clear_reauth_password")
+        issue_code = st.button("Generate Trusted-Person Code", key="issue_code")
+        if issue_code and user_id:
+            code = auth.issue_clearance_code(user_id)
+            trusted = db.get_trusted_contact(user_id)
+            trusted_name = trusted["name"] if trusted else "Trusted person"
+            st.info(f"Share this code with {trusted_name}: `{code}`")
+        entered_code = st.text_input("Step 2: Enter confirmation code", key="clear_code")
         confirmed = st.checkbox("I understand this will delete all memories permanently")
         
         if confirmed:
             col1, col2 = st.columns(2)
             with col1:
                 if st.button("✅ Confirm Delete", type="primary"):
-                    clear_all_memories(memory_system, db)
-                    st.session_state['clear_confirmed'] = False
+                    user = db.get_user_by_username(username)
+                    password_ok = bool(user and auth.verify_password(reauth_password, user["password_hash"]))
+                    code_ok = bool(user_id and auth.verify_clearance_code(user_id, entered_code))
+                    if password_ok and code_ok:
+                        clear_all_memories(memory_system, db)
+                        st.session_state['clear_confirmed'] = False
+                    else:
+                        st.error("Two-step verification failed. Check password and code.")
             with col2:
                 if st.button("❌ Cancel", type="secondary"):
                     st.session_state['clear_confirmed'] = False
                     st.rerun()
+
+    st.markdown("##### Trusted Person & Safety Alerts")
+    user_id = st.session_state.get(SessionKeys.USER_ID)
+    if user_id:
+        trusted = db.get_trusted_contact(user_id)
+        if trusted:
+            st.caption(f"Trusted person: {trusted['name']} ({trusted.get('relation', 'contact')}) - {trusted['contact']}")
+        alerts = db.get_alerts(user_id=user_id, status="open")
+        if alerts:
+            for alert in alerts[:5]:
+                st.warning(f"[{alert['alert_type']}] {alert['message']}")
+        else:
+            st.info("No open safety alerts.")
+
+        if st.button("Generate Doctor Summary", key="doctor_summary_btn"):
+            summary = build_doctor_summary(db, user_id)
+            db.save_doctor_report(user_id, datetime.now().date().isoformat(), summary)
+            st.success("Doctor summary updated.")
+            st.text_area("Latest doctor summary", value=summary, height=180)
+        else:
+            latest = db.get_latest_doctor_report(user_id)
+            if latest:
+                st.text_area("Latest doctor summary", value=latest["summary"], height=180)
 
 
 def render_system_settings(components):
@@ -335,5 +376,34 @@ def clear_all_memories(memory_system, db):
         st.rerun()
     except Exception as e:
         st.error(f"Error clearing memories: {e}")
+
+
+def build_doctor_summary(db, user_id: str) -> str:
+    recent_queries = db.get_recent_query_events(user_id=user_id, since_hours=24 * 7)
+    repeated = [q for q in recent_queries if int(q.get("severity", 1)) >= 2]
+    last_activity = db.get_last_activity(user_id)
+    inactivity_note = "No activity data."
+    if last_activity:
+        try:
+            dt = datetime.fromisoformat(str(last_activity).replace(" ", "T"))
+            delta = datetime.now() - dt
+            inactivity_note = f"Last activity {delta.days} day(s) ago."
+        except Exception:
+            inactivity_note = f"Last activity: {last_activity}"
+    lines = [
+        "Weekly condition summary for doctor review:",
+        f"- Total queries this week: {len(recent_queries)}",
+        f"- Repeated/confusion pattern queries: {len(repeated)}",
+        f"- {inactivity_note}",
+    ]
+    if repeated:
+        lines.append("- Most repeated concerns:")
+        seen = {}
+        for item in repeated:
+            sig = item.get("query_signature", "")[:50]
+            seen[sig] = seen.get(sig, 0) + 1
+        for sig, count in sorted(seen.items(), key=lambda x: x[1], reverse=True)[:5]:
+            lines.append(f"  * {sig} ({count} times)")
+    return "\n".join(lines)
 
 

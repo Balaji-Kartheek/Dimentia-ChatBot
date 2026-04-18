@@ -126,6 +126,18 @@ class AudioProcessor:
                 os.unlink(temp_file_path)
             except:
                 pass
+
+    def _map_language_code(self, language: str) -> str:
+        mapping = {
+            "en": "en-US",
+            "hi": "hi-IN",
+            "ta": "ta-IN",
+            "tel": "te-IN",
+            "es": "es-ES",
+            "fr": "fr-FR",
+            "de": "de-DE",
+        }
+        return mapping.get((language or "en").lower(), "en-US")
     
     def text_to_speech(self, text: str, language: str = "en") -> Optional[bytes]:
         """Convert text to speech and return audio data"""
@@ -198,25 +210,15 @@ class AudioProcessor:
                 
                 # Try Google Speech Recognition first (online, more accurate)
                 try:
-                    text = self.recognizer.recognize_google(audio)
+                    text = self.recognizer.recognize_google(audio, language=self._map_language_code("en"))
                     logger.info(f"Transcription completed using Google: '{text[:50]}...'")
                     return text.strip()
                 except sr.UnknownValueError:
                     logger.warning("Google Speech Recognition could not understand audio")
-                    return ""
+                    return self._transcribe_sphinx_fallback(audio)
                 except sr.RequestError as e:
                     logger.warning(f"Google Speech Recognition service error: {e}")
-                    # Fallback to offline recognition
-                    try:
-                        text = self.recognizer.recognize_sphinx(audio)
-                        logger.info(f"Transcription completed using Sphinx: '{text[:50]}...'")
-                        return text.strip()
-                    except sr.UnknownValueError:
-                        logger.warning("Sphinx could not understand audio")
-                        return ""
-                    except sr.RequestError as e:
-                        logger.error(f"Sphinx error: {e}")
-                        return ""
+                    return self._transcribe_sphinx_fallback(audio)
                 
             finally:
                 # Clean up temp file
@@ -227,6 +229,14 @@ class AudioProcessor:
             
         except Exception as e:
             logger.error(f"Error processing Streamlit audio: {e}")
+            return ""
+
+    def _transcribe_sphinx_fallback(self, audio) -> str:
+        try:
+            text = self.recognizer.recognize_sphinx(audio)
+            logger.info(f"Transcription completed using Sphinx: '{text[:50]}...'")
+            return text.strip()
+        except Exception:
             return ""
     
     def get_available_voices(self) -> list:

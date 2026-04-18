@@ -12,7 +12,7 @@ import re
 from dateutil.parser import parse as parse_datetime
 from dateutil.relativedelta import relativedelta, MO, TU, WE, TH, FR, SA, SU
 
-from config import GEMINI_MODEL, GEMINI_API_KEY
+from config import GEMINI_MODEL, GEMINI_API_KEY, FEATURE_ADAPTIVE_MODE
 from memory_system import MemorySystem
 
 logger = logging.getLogger(__name__)
@@ -39,19 +39,19 @@ class LLMIntegration:
             logger.error(f"Error initializing Gemini model '{self.model}': {e}")
     
     # RAG System
-    def generate_response(self, query: str, user_context: str = "", 
-                         language: str = "en", max_tokens: int = 200) -> Dict:
+    def generate_response(self, query: str, user_context: str = "",
+                         language: str = "en", max_tokens: int = 200, user_id: str = None) -> Dict:
         """Generate a response using RAG (Retrieval Augmented Generation)"""
         try:
             # Retrieve relevant memories
             relevant_memories = self.memory_system.search_memories(
-                query, k=5, language=language
+                query, k=5, language=language, user_id=user_id
             )
             
             # If no results in selected language, retry without language filter
             if not relevant_memories:
                 relevant_memories = self.memory_system.search_memories(
-                    query, k=5, language=None
+                    query, k=5, language=None, user_id=user_id
                 )
 
             if not relevant_memories:
@@ -93,6 +93,8 @@ class LLMIntegration:
 
             # Generate response using Gemini
             response = self._generate_with_llm(query, context, user_context, language)
+            if FEATURE_ADAPTIVE_MODE and len(query.split()) <= 6:
+                response = self._simplify_response(response, language)
             
             return {
                 'response': response,
@@ -405,7 +407,16 @@ Instructions for answering:
 - Use ONLY information present in memories. Do not guess.
 - If multiple memories conflict, choose caregiver-confirmed entries; otherwise say you're unsure and ask for confirmation.
 - If the question is about dates/times, resolve relative dates using CURRENT_DATETIME in context.
-- If either date or time is missing, explicitly state what is missing and ask to confirm."""
+- If either date or time is missing, explicitly state what is missing and ask to confirm.
+- Keep answers short and clear for cognitive accessibility."""
+
+    def _simplify_response(self, response: str, language: str) -> str:
+        if language != "en":
+            return response
+        cleaned = " ".join((response or "").split())
+        if len(cleaned) <= 220:
+            return cleaned
+        return cleaned[:220].rstrip() + " Please ask me if you want more details."
     
     def _create_fallback_response(self, query: str, context: str, language: str) -> str:
         """Create fallback response when Gemini is not available"""

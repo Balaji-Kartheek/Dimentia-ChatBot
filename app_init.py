@@ -13,7 +13,10 @@ ROOT_DIR = Path(__file__).parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from config import SessionKeys, DEFAULT_LANGUAGE
+from config import (
+    SessionKeys, DEFAULT_LANGUAGE,
+    DEFAULT_USERNAME, DEFAULT_PASSWORD, CAREGIVER_USERNAME, CAREGIVER_PASSWORD
+)
 
 
 @st.cache_resource
@@ -26,6 +29,14 @@ def initialize_components():
     from llm_integration import LLMIntegration
 
     db = MemoryDatabase()
+    from auth_service import AuthService
+    auth_service = AuthService(db)
+    for uname, pwd, role, full_name in [
+        (DEFAULT_USERNAME, DEFAULT_PASSWORD, "user", "Default User"),
+        (CAREGIVER_USERNAME, CAREGIVER_PASSWORD, "caregiver", "Default Caregiver"),
+    ]:
+        if not db.get_user_by_username(uname):
+            db.create_user(uname, auth_service.hash_password(pwd), role, full_name)
     memory_system = MemorySystem()
     audio_processor = AudioProcessor()
     entity_extractor = EntityExtractor()

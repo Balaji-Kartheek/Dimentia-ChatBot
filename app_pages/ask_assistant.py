@@ -3,6 +3,7 @@ Ask Assistant page for Dementia Chatbot (custom router version)
 """
 import streamlit as st
 from datetime import datetime
+import re
 from config import SessionKeys, SUPPORTED_LANGUAGES
 
 
@@ -192,12 +193,29 @@ def render_text_question(memory_system, llm_integration, db, language, username)
 def generate_response(question, memory_system, llm_integration, db, language, username, source):
     """Generate response to user question"""
     try:
+        user_id = st.session_state.get(SessionKeys.USER_ID)
         response_data = llm_integration.generate_response(
             query=question,
             user_context=f"User: {username}, Language: {language}",
-            language=language
+            language=language,
+            user_id=user_id
         )
-        
+
+        query_signature = " ".join(sorted(set(re.findall(r"[a-zA-Z]{3,}", (question or "").lower()))))[:120]
+        recent_events = db.get_recent_query_events(user_id=user_id, since_hours=24) if user_id else []
+        repeat_count = sum(1 for e in recent_events if e.get("query_signature") == query_signature)
+        severity = 3 if repeat_count >= 5 else 2 if repeat_count >= 2 else 1
+        if user_id:
+            db.log_query_event(user_id=user_id, query_text=question, query_signature=query_signature, severity=severity)
+            if severity >= 3:
+                db.create_alert(
+                    user_id=user_id,
+                    alert_type="repeated_query",
+                    severity=severity,
+                    message=f"Repeated query detected: '{question[:80]}' ({repeat_count + 1} times in 24h).",
+                )
+                response_data["caregiver_alert"] = "Trusted person alert created due to repeated confusion pattern."
+
         db.log_activity(username, "asked_question", None, f"Question: {question[:100]}...")
         
         conversation_entry = {
@@ -210,6 +228,10 @@ def generate_response(question, memory_system, llm_integration, db, language, us
         
         if 'conversation_history' not in st.session_state:
             st.session_state['conversation_history'] = []
+        for memory in response_data.get("relevant_memories", [])[:3]:
+            mid = memory.get("id")
+            if mid:
+                db.increment_memory_reinforcement(mid)
         
         st.session_state['conversation_history'].append(conversation_entry)
         
@@ -243,6 +265,17 @@ def display_response(response_data, question, language):
                 with col2:
                     similarity_score = memory.get('similarity_score', 0)
                     st.metric("Relevance", f"{similarity_score:.2f}")
+                with st.expander(f"Provenance details #{i+1}"):
+                    st.write({
+                        "timestamp": memory.get("timestamp"),
+                        "created_at": memory.get("created_at"),
+                        "caregiver_confirmed": memory.get("caregiver_confirmed"),
+                        "source": memory.get("source"),
+                        "source_modality": memory.get("source_modality", "text"),
+                        "rank_score": memory.get("rank_score"),
+                    })
+    if response_data.get("caregiver_alert"):
+        st.warning(response_data["caregiver_alert"])
     
     col1, col2, col3 = st.columns(3)
     with col1:

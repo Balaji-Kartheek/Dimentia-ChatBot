@@ -63,6 +63,19 @@ MAX_MEMORY_CHUNKS = 1000
 SIMILARITY_THRESHOLD = 0.7
 TOP_K_RESULTS = 5
 
+# Feature flags and local-first runtime options
+FEATURE_FACE_AUTH = os.getenv("FEATURE_FACE_AUTH", "1") == "1"
+FEATURE_ALERTS = os.getenv("FEATURE_ALERTS", "1") == "1"
+FEATURE_DECAY_RANK = os.getenv("FEATURE_DECAY_RANK", "1") == "1"
+FEATURE_ADAPTIVE_MODE = os.getenv("FEATURE_ADAPTIVE_MODE", "1") == "1"
+PRIVATE_MODE = os.getenv("PRIVATE_MODE", "local")
+
+# Retrieval tuning
+DECAY_HALF_LIFE_DAYS = float(os.getenv("DECAY_HALF_LIFE_DAYS", "14"))
+DECAY_WEIGHT = float(os.getenv("DECAY_WEIGHT", "0.4"))
+TRUST_WEIGHT = float(os.getenv("TRUST_WEIGHT", "0.2"))
+REINFORCEMENT_WEIGHT = float(os.getenv("REINFORCEMENT_WEIGHT", "0.15"))
+
 def get_or_create_secret_key():
     """Get or create encryption key"""
     if SECRET_KEY_FILE.exists():
@@ -90,3 +103,5 @@ class SessionKeys:
     SELECTED_LANGUAGE = "selected_language"
     MEMORY_APPROVED = "memory_approved"
     AUDIO_RECORDED = "audio_recorded"
+    USER_ID = "user_id"
+    COGNITIVE_MODE = "cognitive_mode"

@@ -301,11 +301,18 @@ def save_memory(memory_system, db, text, source, entities, language, username):
         
         st.info(f"📝 Tags prepared: {tags}")
         
+        user_id = st.session_state.get(SessionKeys.USER_ID)
+        has_health_signal = bool((entities or {}).get("medications") or (entities or {}).get("appointments"))
+        importance = 0.9 if has_health_signal else 0.6
+
         memory_id = memory_system.add_memory(
             text=text,
             source=source,
             tags=tags,
             language=language,
+            user_id=user_id,
+            source_modality=source,
+            importance=importance,
         )
         
         st.info(f"💾 Memory ID: {memory_id}")

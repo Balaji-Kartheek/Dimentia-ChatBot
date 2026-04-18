@@ -85,6 +85,8 @@ def initialize_session_state():
     
     if SessionKeys.USER_ROLE not in st.session_state:
         st.session_state[SessionKeys.USER_ROLE] = "user"
+    if SessionKeys.USER_ID not in st.session_state:
+        st.session_state[SessionKeys.USER_ID] = ""
     
     if SessionKeys.SELECTED_LANGUAGE not in st.session_state:
         st.session_state[SessionKeys.SELECTED_LANGUAGE] = DEFAULT_LANGUAGE
@@ -174,7 +176,7 @@ def render_sidebar():
 
             # Logout button (keep at very bottom)
             if st.button("🚪 Logout", type="secondary"):
-                for key in [SessionKeys.USER_LOGGED_IN, SessionKeys.USERNAME, SessionKeys.USER_ROLE]:
+                for key in [SessionKeys.USER_LOGGED_IN, SessionKeys.USERNAME, SessionKeys.USER_ROLE, SessionKeys.USER_ID]:
                     if key in st.session_state:
                         del st.session_state[key]
                 st.rerun()

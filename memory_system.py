@@ -12,8 +12,12 @@ import pickle
 import logging
 from datetime import datetime
 import re
+import math
 
-from config import FAISS_INDEX_PATH, EMBEDDING_MODEL, MAX_MEMORY_CHUNKS, TOP_K_RESULTS, SIMILARITY_THRESHOLD
+from config import (
+    FAISS_INDEX_PATH, EMBEDDING_MODEL, MAX_MEMORY_CHUNKS, TOP_K_RESULTS, SIMILARITY_THRESHOLD,
+    FEATURE_DECAY_RANK, DECAY_HALF_LIFE_DAYS, DECAY_WEIGHT, TRUST_WEIGHT, REINFORCEMENT_WEIGHT
+)
 from database import MemoryDatabase
 
 # Set up logging
@@ -76,11 +80,20 @@ class MemorySystem:
         except Exception as e:
             logger.error(f"Error saving index: {e}")
     
-    def add_memory(self, text: str, source: str, tags: List[str] = None, 
-                   language: str = "en") -> str:
+    def add_memory(self, text: str, source: str, tags: List[str] = None,
+                   language: str = "en", user_id: str = None,
+                   source_modality: str = "text", importance: float = 0.5) -> str:
         """Add a new memory with embedding"""
         # Add to database
-        memory_id = self.db.add_memory(text, source, tags, language)
+        memory_id = self.db.add_memory(
+            text=text,
+            source=source,
+            tags=tags,
+            language=language,
+            user_id=user_id,
+            source_modality=source_modality,
+            importance=importance,
+        )
 
         # Best-effort vector index update; database write remains source of truth
         if self.embedding_model is not None and self.index is not None:
@@ -98,8 +111,8 @@ class MemorySystem:
         logger.info(f"Added memory {memory_id} to index")
         return memory_id
     
-    def search_memories(self, query: str, k: int = TOP_K_RESULTS, 
-                       language: str = None) -> List[Dict]:
+    def search_memories(self, query: str, k: int = TOP_K_RESULTS,
+                       language: str = None, user_id: str = None) -> List[Dict]:
         """Search for relevant memories using vector similarity with date awareness"""
         if self.index is None or self.embedding_model is None or self.index.ntotal == 0:
             return self._keyword_search_memories(query, k, language)
@@ -110,7 +123,7 @@ class MemorySystem:
         
         # If we found a date filter, search by date first
         if date_filter:
-            date_results = self.db.search_memories_by_date(date_filter, language)
+            date_results = self.db.search_memories_by_date(date_filter, language, user_id=user_id)
             if date_results:
                 
                 # Sort by relevance (caregiver confirmed first, then recency)
@@ -131,7 +144,7 @@ class MemorySystem:
             scores, indices = self.index.search(query_embedding, min(max(k * 3, k), self.index.ntotal))
         except Exception as e:
             logger.error(f"Vector search failed, using keyword fallback: {e}")
-            return self._keyword_search_memories(query, k, language)
+            return self._keyword_search_memories(query, k, language, user_id=user_id)
         
         results = []
         for score, idx in zip(scores[0], indices[0]):
@@ -145,6 +158,8 @@ class MemorySystem:
                     # Apply filters
                     if language and memory['language'] != language:
                         continue
+                    if user_id and memory.get("user_id") and memory.get("user_id") != user_id:
+                        continue
                     # Apply similarity threshold (cosine similarity on normalized vectors)
                     if score < SIMILARITY_THRESHOLD:
                         continue
@@ -154,8 +169,31 @@ class MemorySystem:
         
         # Prefer caregiver-confirmed memories, then sort by similarity desc
         def rank_key(m):
-            caregiver_priority = 1 if m.get('caregiver_confirmed') else 0
-            return (caregiver_priority, m.get('similarity_score', 0.0))
+            base_score = m.get('similarity_score', 0.0)
+            if not FEATURE_DECAY_RANK:
+                caregiver_priority = 1 if m.get('caregiver_confirmed') else 0
+                return (caregiver_priority, base_score)
+            created_at = m.get("created_at") or m.get("timestamp")
+            days_old = 0.0
+            if created_at:
+                try:
+                    dt = datetime.fromisoformat(str(created_at).replace(" ", "T"))
+                    days_old = max((datetime.now() - dt).total_seconds() / 86400.0, 0.0)
+                except Exception:
+                    days_old = 0.0
+            recency = math.exp(-math.log(2) * (days_old / max(DECAY_HALF_LIFE_DAYS, 1.0)))
+            trust = 1.0 if m.get("caregiver_confirmed") else 0.0
+            reinforcement = min(float(m.get("reinforcement_count", 0)) / 10.0, 1.0)
+            importance = float(m.get("importance", 0.5))
+            rank = (
+                base_score
+                + DECAY_WEIGHT * recency
+                + TRUST_WEIGHT * trust
+                + REINFORCEMENT_WEIGHT * reinforcement
+                + 0.1 * importance
+            )
+            m["rank_score"] = float(rank)
+            return rank
 
         results.sort(key=rank_key, reverse=True)
         if results:
@@ -163,11 +201,11 @@ class MemorySystem:
 
         # Threshold may be too strict for short/plain-language queries.
         # Fall back to deterministic keyword retrieval from decrypted texts.
-        return self._keyword_search_memories(query, k, language)
+        return self._keyword_search_memories(query, k, language, user_id=user_id)
 
-    def _keyword_search_memories(self, query: str, k: int, language: str = None) -> List[Dict]:
+    def _keyword_search_memories(self, query: str, k: int, language: str = None, user_id: str = None) -> List[Dict]:
         """Keyword-based fallback search over decrypted memory text and tags."""
-        memories = self.db.get_all_memories(language=language)
+        memories = self.db.get_all_memories(language=language, user_id=user_id)
         if not memories:
             return []
 

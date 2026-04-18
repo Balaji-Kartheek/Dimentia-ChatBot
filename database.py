@@ -4,7 +4,7 @@ Database management for Dementia Chatbot
 import sqlite3
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from pathlib import Path
 from config import DATABASE_PATH, FERNET_CIPHER
@@ -18,17 +18,42 @@ class MemoryDatabase:
         """Initialize the database with required tables"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'user',
+                    full_name TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS trusted_contacts (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    relation TEXT,
+                    contact TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             
             # Create memories table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS memories (
                     id TEXT PRIMARY KEY,
+                    user_id TEXT,
                     text_encrypted BLOB NOT NULL,
                     timestamp DATETIME NOT NULL,
                     source TEXT NOT NULL,
                     tags_encrypted BLOB,
                     language TEXT DEFAULT 'en',
                     caregiver_confirmed BOOLEAN DEFAULT FALSE,
+                    source_modality TEXT DEFAULT 'text',
+                    importance REAL DEFAULT 0.5,
+                    reinforcement_count INTEGER DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -39,6 +64,16 @@ class MemoryDatabase:
             except sqlite3.OperationalError:
                 # Column already exists
                 pass
+            for migration in [
+                "ALTER TABLE memories ADD COLUMN user_id TEXT",
+                "ALTER TABLE memories ADD COLUMN source_modality TEXT DEFAULT 'text'",
+                "ALTER TABLE memories ADD COLUMN importance REAL DEFAULT 0.5",
+                "ALTER TABLE memories ADD COLUMN reinforcement_count INTEGER DEFAULT 0",
+            ]:
+                try:
+                    cursor.execute(migration)
+                except sqlite3.OperationalError:
+                    pass
             
             # Create user_sessions table for tracking interactions
             cursor.execute('''
@@ -63,6 +98,55 @@ class MemoryDatabase:
                     details TEXT
                 )
             ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS query_events (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    query_text TEXT NOT NULL,
+                    query_signature TEXT NOT NULL,
+                    severity INTEGER DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS alert_events (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    alert_type TEXT NOT NULL,
+                    severity INTEGER DEFAULT 1,
+                    message TEXT NOT NULL,
+                    status TEXT DEFAULT 'open',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS doctor_reports (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    report_date TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS one_time_codes (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    purpose TEXT NOT NULL,
+                    expires_at DATETIME NOT NULL,
+                    consumed BOOLEAN DEFAULT FALSE,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS face_profiles (
+                    user_id TEXT PRIMARY KEY,
+                    embedding_base64 TEXT NOT NULL,
+                    embedding_dim INTEGER NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             
             conn.commit()
     
@@ -74,8 +158,9 @@ class MemoryDatabase:
         """Decrypt text using Fernet"""
         return FERNET_CIPHER.decrypt(encrypted_text).decode()
     
-    def add_memory(self, text: str, source: str, tags: List[str] = None, 
-                   language: str = "en") -> str:
+    def add_memory(self, text: str, source: str, tags: List[str] = None,
+                   language: str = "en", user_id: str = None, source_modality: str = "text",
+                   importance: float = 0.5) -> str:
         """Add a new memory to the database"""
         memory_id = str(uuid.uuid4())
         encrypted_text = self.encrypt_text(text)
@@ -93,11 +178,11 @@ class MemoryDatabase:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO memories 
-                (id, text_encrypted, timestamp, source, tags_encrypted, 
-                 language, caregiver_confirmed, date_mentions)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (memory_id, encrypted_text, datetime.now(), source, 
-                  encrypted_tags, language, False, date_mentions))
+                (id, user_id, text_encrypted, timestamp, source, tags_encrypted, 
+                 language, caregiver_confirmed, date_mentions, source_modality, importance, reinforcement_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (memory_id, user_id, encrypted_text, datetime.now(), source,
+                  encrypted_tags, language, False, date_mentions, source_modality, importance, 0))
             conn.commit()
         
         return memory_id
@@ -120,18 +205,22 @@ class MemoryDatabase:
                 
                 return {
                     'id': row['id'],
+                    'user_id': row['user_id'],
                     'text': self.decrypt_text(row['text_encrypted']),
                     'timestamp': row['timestamp'],
                     'source': row['source'],
                     'tags': json.loads(self.decrypt_text(row['tags_encrypted'])),
                     'language': row['language'],
                     'caregiver_confirmed': bool(row['caregiver_confirmed']),
+                    'source_modality': row['source_modality'],
+                    'importance': float(row['importance'] or 0.5),
+                    'reinforcement_count': int(row['reinforcement_count'] or 0),
                     'created_at': row['created_at'],
                     'date_mentions': date_mentions
                 }
             return None
     
-    def get_all_memories(self, language: str = None) -> List[Dict]:
+    def get_all_memories(self, language: str = None, user_id: str = None) -> List[Dict]:
         """Get all memories with optional filters"""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -143,6 +232,9 @@ class MemoryDatabase:
             if language:
                 query += ' AND language = ?'
                 params.append(language)
+            if user_id:
+                query += ' AND user_id = ?'
+                params.append(user_id)
             
             
             query += ' ORDER BY created_at DESC'
@@ -160,19 +252,23 @@ class MemoryDatabase:
                 
                 memories.append({
                     'id': row['id'],
+                    'user_id': row['user_id'],
                     'text': self.decrypt_text(row['text_encrypted']),
                     'timestamp': row['timestamp'],
                     'source': row['source'],
                     'tags': json.loads(self.decrypt_text(row['tags_encrypted'])),
                     'language': row['language'],
                     'caregiver_confirmed': bool(row['caregiver_confirmed']),
+                    'source_modality': row['source_modality'],
+                    'importance': float(row['importance'] or 0.5),
+                    'reinforcement_count': int(row['reinforcement_count'] or 0),
                     'created_at': row['created_at'],
                     'date_mentions': date_mentions
                 })
             
             return memories
     
-    def search_memories_by_date(self, target_date: str, language: str = None) -> List[Dict]:
+    def search_memories_by_date(self, target_date: str, language: str = None, user_id: str = None) -> List[Dict]:
         """Search memories that mention a specific date (including relative dates)"""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -187,6 +283,9 @@ class MemoryDatabase:
             if language:
                 query += ' AND language = ?'
                 params.append(language)
+            if user_id:
+                query += ' AND user_id = ?'
+                params.append(user_id)
             
             query += ' ORDER BY created_at DESC'
             cursor.execute(query, params)
@@ -205,12 +304,16 @@ class MemoryDatabase:
                     if date_mentions_data:
                         matching_memories.append({
                             'id': row['id'],
+                            'user_id': row['user_id'],
                             'text': self.decrypt_text(row['text_encrypted']),
                             'timestamp': row['timestamp'],
                             'source': row['source'],
                             'tags': json.loads(self.decrypt_text(row['tags_encrypted'])),
                             'language': row['language'],
                             'caregiver_confirmed': bool(row['caregiver_confirmed']),
+                            'source_modality': row['source_modality'],
+                            'importance': float(row['importance'] or 0.5),
+                            'reinforcement_count': int(row['reinforcement_count'] or 0),
                             'created_at': row['created_at'],
                             'date_mentions': date_mentions_data
                         })
@@ -236,6 +339,15 @@ class MemoryDatabase:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM memories WHERE id = ?', (memory_id,))
+            conn.commit()
+
+    def increment_memory_reinforcement(self, memory_id: str):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE memories SET reinforcement_count = COALESCE(reinforcement_count, 0) + 1 WHERE id = ?",
+                (memory_id,),
+            )
             conn.commit()
     
     def log_activity(self, user_id: str, action: str, memory_id: str = None, 
@@ -271,3 +383,186 @@ class MemoryDatabase:
             
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
+
+    def create_user(self, username: str, password_hash: str, role: str, full_name: str) -> str:
+        user_id = str(uuid.uuid4())
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO users (id, username, password_hash, role, full_name) VALUES (?, ?, ?, ?, ?)",
+                (user_id, username, password_hash, role, full_name),
+            )
+            conn.commit()
+        return user_id
+
+    def get_user_by_username(self, username: str) -> Optional[Dict]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_user_by_id(self, user_id: str) -> Optional[Dict]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def upsert_trusted_contact(self, user_id: str, name: str, relation: str, contact: str):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM trusted_contacts WHERE user_id = ?", (user_id,))
+            cursor.execute(
+                "INSERT INTO trusted_contacts (id, user_id, name, relation, contact) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), user_id, name, relation, contact),
+            )
+            conn.commit()
+
+    def get_trusted_contact(self, user_id: str) -> Optional[Dict]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM trusted_contacts WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def store_one_time_code(self, user_id: str, code: str, purpose: str, valid_minutes: int = 10):
+        expires_at = datetime.now() + timedelta(minutes=valid_minutes)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO one_time_codes (id, user_id, code, purpose, expires_at, consumed) VALUES (?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), user_id, code, purpose, expires_at.isoformat(), False),
+            )
+            conn.commit()
+
+    def verify_one_time_code(self, user_id: str, code: str, purpose: str) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT * FROM one_time_codes
+                WHERE user_id = ? AND code = ? AND purpose = ? AND consumed = 0
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (user_id, code, purpose),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return False
+            expires_at = datetime.fromisoformat(row["expires_at"])
+            if datetime.now() > expires_at:
+                return False
+            cursor.execute("UPDATE one_time_codes SET consumed = 1 WHERE id = ?", (row["id"],))
+            conn.commit()
+            return True
+
+    def store_face_embedding(self, user_id: str, embedding_base64: str, embedding_dim: int):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO face_profiles (user_id, embedding_base64, embedding_dim, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    embedding_base64=excluded.embedding_base64,
+                    embedding_dim=excluded.embedding_dim,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (user_id, embedding_base64, embedding_dim),
+            )
+            conn.commit()
+
+    def get_face_embedding(self, user_id: str) -> Optional[Dict]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM face_profiles WHERE user_id = ?", (user_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def log_query_event(self, user_id: str, query_text: str, query_signature: str, severity: int = 1):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO query_events (id, user_id, query_text, query_signature, severity) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), user_id, query_text, query_signature, severity),
+            )
+            conn.commit()
+
+    def get_recent_query_events(self, user_id: str, since_hours: int = 24) -> List[Dict]:
+        cutoff = datetime.now() - timedelta(hours=since_hours)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM query_events WHERE user_id = ? AND created_at >= ? ORDER BY created_at DESC",
+                (user_id, cutoff.isoformat()),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def create_alert(self, user_id: str, alert_type: str, message: str, severity: int = 1):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO alert_events (id, user_id, alert_type, severity, message) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), user_id, alert_type, severity, message),
+            )
+            conn.commit()
+
+    def get_alerts(self, user_id: str = None, status: str = "open") -> List[Dict]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            if user_id:
+                cursor.execute(
+                    "SELECT * FROM alert_events WHERE user_id = ? AND status = ? ORDER BY created_at DESC",
+                    (user_id, status),
+                )
+            else:
+                cursor.execute(
+                    "SELECT * FROM alert_events WHERE status = ? ORDER BY created_at DESC",
+                    (status,),
+                )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def mark_alert_resolved(self, alert_id: str):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE alert_events SET status = 'resolved' WHERE id = ?", (alert_id,))
+            conn.commit()
+
+    def get_last_activity(self, user_id: str) -> Optional[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT timestamp FROM activity_log WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return row["timestamp"] if row else None
+
+    def save_doctor_report(self, user_id: str, report_date: str, summary: str):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO doctor_reports (id, user_id, report_date, summary) VALUES (?, ?, ?, ?)",
+                (str(uuid.uuid4()), user_id, report_date, summary),
+            )
+            conn.commit()
+
+    def get_latest_doctor_report(self, user_id: str) -> Optional[Dict]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM doctor_reports WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None

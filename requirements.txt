@@ -27,6 +27,7 @@ nltk
 # Security and Encryption
 cryptography
 bcrypt
+opencv-python
 
 # Data Processing
 pandas==2.3.3
