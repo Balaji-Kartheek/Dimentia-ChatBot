@@ -23,12 +23,18 @@ class LLMIntegration:
         self.model = GEMINI_MODEL
         self.api_key = GEMINI_API_KEY
         self.gemini_client = None
-        self.model_candidates = [self.model, "gemini-2.5-flash", "gemini-1.5-flash"]
+        self.model_candidates = [
+            self.model,
+            "gemini-2.0-flash",
+            "gemini-2.5-flash",
+            "gemini-1.5-flash",
+        ]
         self._initialize_gemini()
     
     def _initialize_gemini(self):
         """Initialize Gemini model if API key is configured."""
-        self.api_key = self.api_key or os.getenv("GEMINI_API_KEY", "")
+        raw = os.getenv("GEMINI_API_KEY", "") or self.api_key or ""
+        self.api_key = raw.strip().strip('"').strip("'")
         if not self.api_key:
             logger.warning("GEMINI_API_KEY is not set. LLM responses will use fallback mode.")
             return
@@ -523,7 +529,201 @@ Instructions for answering:
         if len(cleaned) <= 220:
             return cleaned
         return cleaned[:220].rstrip() + " Please ask me if you want more details."
-    
+
+    def summarize_memory_notes_brief(
+        self,
+        *,
+        language: str,
+        memories: List[Dict],
+        focus: str = "recap",
+    ) -> Optional[str]:
+        """Turn raw notes into neutral bullets. focus='recap' for general summary; 'today' for today's tasks list."""
+        if not memories:
+            return None
+        try:
+            self._initialize_gemini()
+            if not self.gemini_client:
+                return None
+
+            lang_name = SUPPORTED_LANGUAGES.get(language, language)
+            lines = []
+            for m in memories:
+                tx = (m.get("text") or "").strip()
+                if tx:
+                    lines.append(tx)
+            notes_block = "\n".join(f"• {ln}" for ln in lines)
+
+            if focus == "today":
+                job_block = f"""These items are stored as **today's** dated notes (appointments, visits, tasks).
+
+RAW NOTES:
+{notes_block}
+
+Your job: write **what to cover today** — short, actionable bullets (neutral calendar style), **not** a copy of their words.
+
+Output rules:
+- **Only** lines starting with "- ". No title, preamble, or closing.
+- **Rewrite** each item: who/what/when if present. Avoid "I have", "I think", "today I" — use forms like "Appointment with … around …", "Visit planned …".
+- Merge duplicates. **2–8 bullets**; **≤ 22 words** each unless a name requires more.
+- **No new facts** — only what is in the notes.
+- Language: **{lang_name}** (code {language}).
+- {self._mandatory_answer_language_line(language)}"""
+            else:
+                job_block = f"""You help someone with memory difficulty. Below are **raw notes** they saved (may be messy or first-person).
+
+RAW NOTES:
+{notes_block}
+
+Your job: write a **brief factual summary**, not a copy of their words.
+
+Output rules:
+- **Only** lines that start with "- " (markdown bullets). No title, no preamble, no closing.
+- **Rewrite** every fact in neutral, calm language (like a short care diary or calendar digest). Do **not** mirror their wording, slang, or sentence openings (avoid "I have", "I think", "I need", "I visited" — use forms like "Visit to … noted", "Appointment regarding …", "Plan: …").
+- Merge duplicate or overlapping facts into one bullet when clear.
+- About **3–8 bullets** total; each bullet **≤ 20 words** unless a name/place requires more.
+- **No new facts** — only what appears in the notes. If a time or place is vague, keep it vague.
+- Language for all bullets: **{lang_name}** (code {language}).
+- {self._mandatory_answer_language_line(language)}"""
+
+            user_prompt = job_block
+
+            sys_instr = (
+                "Output only markdown bullet lines beginning with '- '. "
+                "Never paste the user's sentences verbatim."
+            )
+
+            for candidate_model in self.model_candidates:
+                try:
+                    response = self.gemini_client.models.generate_content(
+                        model=candidate_model,
+                        contents=user_prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=sys_instr,
+                            temperature=0.15,
+                            top_p=0.85,
+                            max_output_tokens=360,
+                        ),
+                    )
+                    text = getattr(response, "text", "") or ""
+                    if not (text or "").strip():
+                        cand = getattr(response, "candidates", None) or []
+                        if cand:
+                            parts = getattr(getattr(cand[0], "content", None), "parts", None) or []
+                            chunks = []
+                            for p in parts:
+                                t0 = getattr(p, "text", None)
+                                if t0:
+                                    chunks.append(t0)
+                            text = "\n".join(chunks)
+                    text = text.strip()
+                    if text:
+                        self.model = candidate_model
+                        # Drop accidental headings / code fences
+                        out_lines = []
+                        for ln in text.splitlines():
+                            s = ln.strip()
+                            if not s:
+                                continue
+                            if s.startswith("```"):
+                                continue
+                            if s.startswith("#"):
+                                continue
+                            if not s.startswith("- "):
+                                s = "- " + s.lstrip("-• ").strip()
+                            out_lines.append(s)
+                        return "\n".join(out_lines) if out_lines else None
+                except Exception as model_error:
+                    logger.warning(f"Memory brief model '{candidate_model}' failed: {model_error}")
+                    continue
+            return None
+        except Exception as e:
+            logger.error(f"summarize_memory_notes_brief error: {e}")
+            return None
+
+    def generate_day_start_summary(
+        self,
+        *,
+        language: str,
+        user_display_name: str,
+        today_iso: str,
+        summary_memories: List[Dict],
+        today_memories: List[Dict],
+    ) -> Optional[str]:
+        """Morning brief: bullet Summary (prior notes) + What need to cover (today)."""
+        try:
+            if not self.gemini_client:
+                self._initialize_gemini()
+            if not self.gemini_client:
+                return None
+
+            lang_name = SUPPORTED_LANGUAGES.get(language, language)
+            now_s = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+            def block(title: str, rows: List[Dict]) -> str:
+                if not rows:
+                    return f"{title}\n(none)"
+                lines = []
+                for i, m in enumerate(rows, 1):
+                    tx = (m.get("text") or "").strip()
+                    lines.append(f"  {i}. {tx}")
+                return f"{title}\n" + "\n".join(lines)
+
+            sum_block = block("SUMMARY_CONTEXT (saved memories to recap; not today's dated tasks below)", summary_memories)
+            today_block = block("TODAY_TASKS_CONTEXT (dated for today only)", today_memories)
+
+            user_prompt = f"""Write a short morning brief for a memory assistant user. Tone: calm, clear, respectful.
+
+User name: {user_display_name}
+Now: {now_s}
+Today date: {today_iso}
+Output language: {lang_name} (code {language})
+
+{sum_block}
+
+{today_block}
+
+Output Markdown with EXACTLY these headings (###):
+
+### Good morning
+Exactly one short line (greeting only, no bullets).
+
+### Summary
+ONLY bullet lines starting with "- ". **Rewrite** facts from SUMMARY_CONTEXT in neutral, factual language (short diary style). **Do not** repeat the user's original phrasing or first-person voice ("I have", "I think", "I need"). Paraphrase every item. Merge duplicates. Max ~18 words per bullet. If SUMMARY_CONTEXT is empty, one bullet that there are no earlier notes yet (in {lang_name}).
+
+### What need to cover
+ONLY bullet lines starting with "- ". Each bullet: one concrete task or appointment for today from TODAY_TASKS_CONTEXT. If that context is empty, one bullet that nothing with today's date is stored yet (in {lang_name}).
+
+Rules:
+- Do not invent facts, places, or times.
+- Do not use "Yesterday" / "Today" as section titles — use the three headings above exactly.
+- {self._mandatory_answer_language_line(language)}"""
+
+            sys_instr = "Output only the Markdown brief. No extra commentary."
+
+            for candidate_model in self.model_candidates:
+                try:
+                    response = self.gemini_client.models.generate_content(
+                        model=candidate_model,
+                        contents=user_prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=sys_instr,
+                            temperature=0.2,
+                            top_p=0.9,
+                            max_output_tokens=480,
+                        ),
+                    )
+                    text = getattr(response, "text", "") or ""
+                    if text.strip():
+                        self.model = candidate_model
+                        return text.strip()
+                except Exception as model_error:
+                    logger.warning(f"Day-start model '{candidate_model}' failed: {model_error}")
+                    continue
+            return None
+        except Exception as e:
+            logger.error(f"Day-start summary error: {e}")
+            return None
+
     def _create_fallback_response(self, query: str, context: str, language: str) -> str:
         """Create fallback response when Gemini is not available"""
         fallback_responses = {

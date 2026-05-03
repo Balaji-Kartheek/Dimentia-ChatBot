@@ -51,7 +51,8 @@ DEFAULT_LANGUAGE = "en"
 # Model configuration
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 GEMINI_MODEL = "gemini-2.5-flash"
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+_gemini_raw = os.getenv("GEMINI_API_KEY", "") or ""
+GEMINI_API_KEY = _gemini_raw.strip().strip('"').strip("'")
 
 # Audio configuration
 AUDIO_SAMPLE_RATE = 16000

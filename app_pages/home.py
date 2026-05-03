@@ -2,6 +2,8 @@
 Home page for Dementia Chatbot
 Handles login and main dashboard
 """
+import hashlib
+import os
 import streamlit as st
 from datetime import datetime, timedelta
 from config import SessionKeys, FEATURE_FACE_AUTH, DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES
@@ -180,7 +182,7 @@ def render_home_page():
 
     user_id = st.session_state.get(SessionKeys.USER_ID)
     if user_id:
-        render_day_start_summary(db, user_id, language)
+        render_day_start_summary(components, db, user_id, language, username)
         maybe_create_inactivity_alert(db, user_id)
     
     
@@ -261,17 +263,203 @@ def authenticate_user(username: str, password: str) -> bool:
     return bool(username and password)
 
 
-def render_day_start_summary(db, user_id: str, language: str):
-    today_key = f"day_summary_seen_{datetime.now().date().isoformat()}_{user_id}_{language}"
-    if st.session_state.get(today_key):
+def _bullet_line(text: str, limit: int = 110) -> str:
+    clean = " ".join((text or "").split())
+    if len(clean) <= limit:
+        return clean
+    return clean[: limit - 1].rstrip() + "…"
+
+
+def _collect_day_start_context(db, user_id: str, language: str) -> dict:
+    """Today-dated rows → 'What need to cover'; other recent rows → Summary bullets."""
+    today_d = datetime.now().date().isoformat()
+    today_memories = db.search_memories_by_date(today_d, language=language, user_id=user_id)
+    today_ids = {m.get("id") for m in today_memories if m.get("id")}
+
+    recent_pool = db.get_all_memories(language=language, user_id=user_id)[:40]
+    summary_memories = [m for m in recent_pool if m.get("id") not in today_ids][:15]
+
+    return {
+        "today_iso": today_d,
+        "summary_memories": summary_memories,
+        "today_memories": today_memories[:15],
+    }
+
+
+def _raw_summary_bullets(sm: list, language: str) -> str:
+    fb = "\n".join(
+        f"- {_bullet_line((m.get('text') or '').strip(), 88)}"
+        for m in sm
+        if (m.get("text") or "").strip()
+    )
+    return fb if fb.strip() else f"- {t(language, 'day_summary.empty_summary')}"
+
+
+def _summary_cache_keys(user_id: str, language: str, fp: str) -> tuple[str, str]:
+    base = f"home_summary_brief_{user_id}_{language}_{fp}"
+    return base, base + "_llm"
+
+
+def _clear_summary_cache(user_id: str, language: str, fp: str) -> None:
+    b, meta = _summary_cache_keys(user_id, language, fp)
+    st.session_state.pop(b, None)
+    st.session_state.pop(meta, None)
+
+
+def _raw_today_bullets(tm: list, language: str) -> str:
+    fb = "\n".join(
+        f"- {_bullet_line((m.get('text') or '').strip(), 88)}"
+        for m in tm
+        if (m.get("text") or "").strip()
+    )
+    return fb if fb.strip() else f"- {t(language, 'day_summary.empty_today_tasks')}"
+
+
+def _tasks_cache_keys(user_id: str, language: str, fp: str) -> tuple[str, str]:
+    base = f"home_tasks_brief_{user_id}_{language}_{fp}"
+    return base, base + "_meta"
+
+
+def _clear_tasks_cache(user_id: str, language: str, fp: str) -> None:
+    b, meta = _tasks_cache_keys(user_id, language, fp)
+    st.session_state.pop(b, None)
+    st.session_state.pop(meta, None)
+
+
+def _call_summarize_brief(gen, language: str, memories: list, focus: str | None):
+    if focus:
+        try:
+            return gen(language=language, memories=memories, focus=focus)
+        except TypeError:
+            pass
+    return gen(language=language, memories=memories)
+
+
+def _build_summary_panel_markdown(
+    ctx: dict,
+    language: str,
+    components: dict,
+    user_id: str,
+    fp: str,
+) -> tuple[str, str]:
+    """Returns (markdown, meta). meta is llm | failed | no_key | no_method | empty."""
+    header = f"### {t(language, 'day_summary.section_summary')}\n\n"
+    sm = ctx["summary_memories"]
+    if not sm:
+        return header + f"- {t(language, 'day_summary.empty_summary')}", "empty"
+
+    cache_key, meta_key = _summary_cache_keys(user_id, language, fp)
+    if cache_key not in st.session_state:
+        llm = components.get("llm_integration")
+        gen = getattr(llm, "summarize_memory_notes_brief", None) if llm else None
+        env_key = (os.getenv("GEMINI_API_KEY") or "").strip().strip('"').strip("'")
+        if not callable(gen):
+            st.session_state[cache_key] = _raw_summary_bullets(sm, language)
+            st.session_state[meta_key] = "no_method"
+        elif not env_key and not getattr(llm, "api_key", ""):
+            st.session_state[cache_key] = _raw_summary_bullets(sm, language)
+            st.session_state[meta_key] = "no_key"
+        else:
+            out = _call_summarize_brief(gen, language, sm, None)
+            if out and out.strip():
+                st.session_state[cache_key] = out.strip()
+                st.session_state[meta_key] = "llm"
+            else:
+                st.session_state[cache_key] = _raw_summary_bullets(sm, language)
+                st.session_state[meta_key] = "failed"
+    return header + st.session_state[cache_key], str(st.session_state.get(meta_key, "failed"))
+
+
+def _build_today_tasks_panel_markdown(
+    ctx: dict,
+    language: str,
+    components: dict,
+    user_id: str,
+    fp: str,
+) -> tuple[str, str]:
+    header = f"### {t(language, 'day_summary.section_what_to_cover')}\n\n"
+    tm = ctx["today_memories"]
+    if not tm:
+        return header + f"- {t(language, 'day_summary.empty_today_tasks')}", "empty"
+
+    cache_key, meta_key = _tasks_cache_keys(user_id, language, fp)
+    if cache_key not in st.session_state:
+        llm = components.get("llm_integration")
+        gen = getattr(llm, "summarize_memory_notes_brief", None) if llm else None
+        env_key = (os.getenv("GEMINI_API_KEY") or "").strip().strip('"').strip("'")
+        if not callable(gen):
+            st.session_state[cache_key] = _raw_today_bullets(tm, language)
+            st.session_state[meta_key] = "no_method"
+        elif not env_key and not getattr(llm, "api_key", ""):
+            st.session_state[cache_key] = _raw_today_bullets(tm, language)
+            st.session_state[meta_key] = "no_key"
+        else:
+            out = _call_summarize_brief(gen, language, tm, "today")
+            if out and out.strip():
+                st.session_state[cache_key] = out.strip()
+                st.session_state[meta_key] = "llm"
+            else:
+                st.session_state[cache_key] = _raw_today_bullets(tm, language)
+                st.session_state[meta_key] = "failed"
+    return header + st.session_state[cache_key], str(st.session_state.get(meta_key, "failed"))
+
+
+def render_day_start_summary(components: dict, db, user_id: str, language: str, username: str):
+    """Two buttons: summary (LLM-paraphrased) vs today's dated tasks (on demand)."""
+    _ = username
+    mems = db.get_all_memories(language=language, user_id=user_id)[:30]
+    if not mems:
         return
-    memories = db.get_all_memories(language=language, user_id=user_id)[:8]
-    if not memories:
-        return
-    recent = [m["text"] for m in memories[:3]]
-    msg = t(language, "day_summary.prefix") + "\n- " + "\n- ".join(recent)
-    st.info(msg)
-    st.session_state[today_key] = True
+
+    fp = hashlib.md5(",".join(str(m.get("id") or "") for m in mems).encode()).hexdigest()[:16]
+    ctx = _collect_day_start_context(db, user_id, language)
+
+    sum_flag = f"home_open_summary_{user_id}_{language}_{fp}"
+    task_flag = f"home_open_tasks_{user_id}_{language}_{fp}"
+
+    st.subheader(t(language, "day_summary.card_title"))
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button(
+            t(language, "home.btn_summary"),
+            key=f"home_btn_summary_{user_id}_{language}",
+            use_container_width=True,
+        ):
+            _clear_summary_cache(user_id, language, fp)
+            st.session_state[sum_flag] = True
+    with c2:
+        if st.button(
+            t(language, "home.btn_today_tasks"),
+            key=f"home_btn_today_{user_id}_{language}",
+            use_container_width=True,
+        ):
+            _clear_tasks_cache(user_id, language, fp)
+            st.session_state[task_flag] = True
+
+    if st.session_state.get(sum_flag):
+        md, meta = _build_summary_panel_markdown(
+            ctx, language, components, user_id, fp
+        )
+        st.markdown(md)
+        if ctx["summary_memories"] and meta != "llm":
+            cap = {
+                "no_method": "home.summary_no_method",
+                "no_key": "home.summary_raw_fallback",
+                "failed": "home.summary_gemini_failed",
+            }.get(meta, "home.summary_gemini_failed")
+            st.caption(t(language, cap))
+    if st.session_state.get(task_flag):
+        md_t, meta_t = _build_today_tasks_panel_markdown(
+            ctx, language, components, user_id, fp
+        )
+        st.markdown(md_t)
+        if ctx["today_memories"] and meta_t != "llm":
+            cap = {
+                "no_method": "home.summary_no_method",
+                "no_key": "home.summary_raw_fallback",
+                "failed": "home.summary_gemini_failed",
+            }.get(meta_t, "home.summary_gemini_failed")
+            st.caption(t(language, cap))
 
 
 def maybe_create_inactivity_alert(db, user_id: str):
