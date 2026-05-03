@@ -115,7 +115,7 @@ class MemorySystem:
                        language: str = None, user_id: str = None) -> List[Dict]:
         """Search for relevant memories using vector similarity with date awareness"""
         if self.index is None or self.embedding_model is None or self.index.ntotal == 0:
-            return self._keyword_search_memories(query, k, language)
+            return self._keyword_search_memories(query, k, language, user_id=user_id)
         
         # Check for date-based queries first
         from date_utils import date_extractor
@@ -158,7 +158,8 @@ class MemorySystem:
                     # Apply filters
                     if language and memory['language'] != language:
                         continue
-                    if user_id and memory.get("user_id") and memory.get("user_id") != user_id:
+                    # Strict isolation: when querying as a user, only that user's rows count
+                    if user_id and memory.get("user_id") != user_id:
                         continue
                     # Apply similarity threshold (cosine similarity on normalized vectors)
                     if score < SIMILARITY_THRESHOLD:
@@ -262,8 +263,8 @@ class MemorySystem:
         if not memory:
             return []
         
-        # Use the memory text as query
-        return self.search_memories(memory['text'], k=k)
+        uid = memory.get("user_id")
+        return self.search_memories(memory["text"], k=k, user_id=uid)
     
     def rebuild_index(self):
         """Rebuild the entire FAISS index from database"""
@@ -323,10 +324,19 @@ class MemorySystem:
         self.rebuild_index()
         
         logger.info(f"Deleted memory {memory_id}")
+
+    def delete_all_memories_for_user(self, user_id: str) -> int:
+        """Remove every memory for one user and rebuild the vector index once."""
+        if not user_id:
+            return 0
+        n = self.db.delete_memories_for_user(user_id)
+        self.rebuild_index()
+        logger.info(f"Removed {n} memories for user {user_id}")
+        return n
     
-    def get_memory_stats(self) -> Dict:
-        """Get statistics about stored memories"""
-        memories = self.db.get_all_memories()
+    def get_memory_stats(self, user_id: Optional[str] = None) -> Dict:
+        """Get statistics about stored memories. Pass user_id to scope to one account."""
+        memories = self.db.get_all_memories(user_id=user_id)
         
         stats = {
             'total_memories': len(memories),

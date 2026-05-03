@@ -43,7 +43,10 @@ def render_add_memory_page():
     st.markdown("### 📚 Recent Memories")
     
     try:
-        recent_memories = db.get_all_memories(language=language)
+        uid = st.session_state.get(SessionKeys.USER_ID)
+        recent_memories = (
+            db.get_all_memories(language=language, user_id=uid) if uid else []
+        )
         
         if recent_memories:
             search_term = st.text_input("Search recent memories", placeholder="Type keyword like appointment, medicine, Sunday...")

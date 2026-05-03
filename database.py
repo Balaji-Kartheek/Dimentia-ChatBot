@@ -341,6 +341,16 @@ class MemoryDatabase:
             cursor.execute('DELETE FROM memories WHERE id = ?', (memory_id,))
             conn.commit()
 
+    def delete_memories_for_user(self, user_id: str) -> int:
+        """Delete all memories belonging to one user. Returns rows deleted."""
+        if not user_id:
+            return 0
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM memories WHERE user_id = ?', (user_id,))
+            conn.commit()
+            return cursor.rowcount
+
     def increment_memory_reinforcement(self, memory_id: str):
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()

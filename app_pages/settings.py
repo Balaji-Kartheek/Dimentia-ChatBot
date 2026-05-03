@@ -5,6 +5,7 @@ import streamlit as st
 import json
 import csv
 import io
+import sqlite3
 from datetime import datetime, timedelta
 from config import SessionKeys, SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE
 from auth_service import AuthService
@@ -93,10 +94,21 @@ def render_security_settings(user_role):
         st.info("🔒 Security settings are managed by your caregiver")
 
 
+def _stats_for_user_memories(db, user_id: str) -> dict:
+    """Per-user memory counts for the Data Management tab (avoids older MemorySystem APIs)."""
+    memories = db.get_all_memories(user_id=user_id) if user_id else []
+    languages = {}
+    for memory in memories:
+        lang = memory["language"]
+        languages[lang] = languages.get(lang, 0) + 1
+    return {"total_memories": len(memories), "languages": languages}
+
+
 def render_data_management(memory_system, db, user_role):
     st.markdown("#### 💾 Data Management")
+    user_id = st.session_state.get(SessionKeys.USER_ID)
     try:
-        stats = memory_system.get_memory_stats()
+        stats = _stats_for_user_memories(db, user_id)
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Total Memories", stats['total_memories'])
@@ -111,7 +123,7 @@ def render_data_management(memory_system, db, user_role):
     # Show memories table
     st.markdown("##### 📋 Your Memories")
     try:
-        memories = db.get_all_memories()
+        memories = db.get_all_memories(user_id=user_id) if user_id else []
         if memories:
             # Create a summary table
             summary_data = []
@@ -135,11 +147,11 @@ def render_data_management(memory_system, db, user_role):
     col1, col2 = st.columns(2)
     with col1:
         if st.button("📊 Download as CSV", use_container_width=True):
-            export_memories_csv(db)
+            export_memories_csv(db, user_id=user_id)
     with col2:
         if user_role == "caregiver":
             if st.button("📤 Export JSON", use_container_width=True):
-                export_memories(memory_system, db)
+                export_memories(memory_system, db, user_id=user_id)
     
     if user_role == "caregiver":
         st.markdown("##### Data Import")
@@ -147,46 +159,45 @@ def render_data_management(memory_system, db, user_role):
         if uploaded_file:
             import_memories(uploaded_file, memory_system, db)
     
-    st.markdown("##### Clear Data (Two-Step Verification)")
+    st.markdown("##### Clear Data")
     
-    # Use session state to track confirmation
-    if 'clear_confirmed' not in st.session_state:
-        st.session_state['clear_confirmed'] = False
-    
-    if st.button("🗑️ Clear All Memories", type="secondary"):
-        st.session_state['clear_confirmed'] = True
-    
-    if st.session_state['clear_confirmed']:
-        st.warning("⚠️ This will permanently delete ALL memories!")
-        auth = AuthService(db)
-        user_id = st.session_state.get(SessionKeys.USER_ID)
-        username = st.session_state.get(SessionKeys.USERNAME, "")
-        reauth_password = st.text_input("Step 1: Re-enter password", type="password", key="clear_reauth_password")
-        issue_code = st.button("Generate Trusted-Person Code", key="issue_code")
-        if issue_code and user_id:
-            code = auth.issue_clearance_code(user_id)
-            trusted = db.get_trusted_contact(user_id)
-            trusted_name = trusted["name"] if trusted else "Trusted person"
-            st.info(f"Share this code with {trusted_name}: `{code}`")
-        entered_code = st.text_input("Step 2: Enter confirmation code", key="clear_code")
-        confirmed = st.checkbox("I understand this will delete all memories permanently")
-        
-        if confirmed:
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("✅ Confirm Delete", type="primary"):
-                    user = db.get_user_by_username(username)
-                    password_ok = bool(user and auth.verify_password(reauth_password, user["password_hash"]))
-                    code_ok = bool(user_id and auth.verify_clearance_code(user_id, entered_code))
-                    if password_ok and code_ok:
-                        clear_all_memories(memory_system, db)
-                        st.session_state['clear_confirmed'] = False
-                    else:
-                        st.error("Two-step verification failed. Check password and code.")
-            with col2:
-                if st.button("❌ Cancel", type="secondary"):
-                    st.session_state['clear_confirmed'] = False
-                    st.rerun()
+    if "clear_confirmed" not in st.session_state:
+        st.session_state["clear_confirmed"] = False
+
+    # After a successful clear: only show success + OK (no clear / password UI)
+    if st.session_state.get("memories_cleared_success"):
+        st.success(st.session_state["memories_cleared_success"])
+        if st.button("OK", type="primary", key="dismiss_memories_cleared"):
+            del st.session_state["memories_cleared_success"]
+            st.rerun()
+    else:
+        if not st.session_state["clear_confirmed"]:
+            if st.button("🗑️ Clear All Memories", type="secondary", key="start_clear_memories"):
+                st.session_state["clear_confirmed"] = True
+                st.rerun()
+
+        if st.session_state["clear_confirmed"]:
+            st.warning("⚠️ This will permanently delete all memories for **your** account.")
+            auth = AuthService(db)
+            user_id = st.session_state.get(SessionKeys.USER_ID)
+            username = st.session_state.get(SessionKeys.USERNAME, "")
+            reauth_password = st.text_input("Re-enter your password", type="password", key="clear_reauth_password")
+            confirmed = st.checkbox("I understand this will delete all memories permanently", key="clear_understand_check")
+
+            if confirmed:
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("✅ Confirm Delete", type="primary", key="confirm_clear_memories"):
+                        user = db.get_user_by_username(username)
+                        password_ok = bool(user and auth.verify_password(reauth_password, user["password_hash"]))
+                        if password_ok and user_id:
+                            clear_all_memories(memory_system, db, user_id)
+                        else:
+                            st.error("Incorrect password or not signed in.")
+                with col2:
+                    if st.button("❌ Cancel", type="secondary", key="cancel_clear_memories"):
+                        st.session_state["clear_confirmed"] = False
+                        st.rerun()
 
     st.markdown("##### Trusted Person & Safety Alerts")
     user_id = st.session_state.get(SessionKeys.USER_ID)
@@ -230,15 +241,17 @@ def render_system_settings(components):
             st.error("🔴 Audio Error")
     with col3:
         try:
-            _ = bool(components['db'].get_all_memories())
+            uid = st.session_state.get(SessionKeys.USER_ID)
+            if uid:
+                _ = components['db'].get_all_memories(user_id=uid)
             st.success("🟢 Database Ready")
         except:
             st.error("🔴 Database Error")
 
 
-def export_memories(memory_system, db):
+def export_memories(memory_system, db, user_id: str = None):
     try:
-        memories = db.get_all_memories()
+        memories = db.get_all_memories(user_id=user_id) if user_id else []
         export_data = {
             'total_memories': len(memories),
             'memories': memories
@@ -255,10 +268,10 @@ def export_memories(memory_system, db):
         st.error(f"Error exporting memories: {e}")
 
 
-def export_memories_csv(db):
+def export_memories_csv(db, user_id: str = None):
     """Export memories as a structured CSV file"""
     try:
-        memories = db.get_all_memories()
+        memories = db.get_all_memories(user_id=user_id) if user_id else []
         
         if not memories:
             st.warning("No memories found to export.")
@@ -351,6 +364,7 @@ def import_memories(uploaded_file, memory_system, db):
             st.error("Invalid file format")
             return
         imported_count = 0
+        uid = st.session_state.get(SessionKeys.USER_ID)
         for memory_data in json_data['memories']:
             try:
                 memory_system.add_memory(
@@ -358,6 +372,7 @@ def import_memories(uploaded_file, memory_system, db):
                     source=f"imported_{memory_data.get('source', 'unknown')}",
                     tags=memory_data.get('tags', []),
                     language=memory_data.get('language', 'en'),
+                    user_id=uid,
                 )
                 imported_count += 1
             except Exception as e:
@@ -367,12 +382,29 @@ def import_memories(uploaded_file, memory_system, db):
         st.error(f"Error importing memories: {e}")
 
 
-def clear_all_memories(memory_system, db):
+def clear_all_memories(memory_system, db, user_id: str):
+    """Delete this user's rows in SQLite and rebuild FAISS. Uses inline SQL if DB helper is missing (old deploys)."""
     try:
-        memories = db.get_all_memories()
-        for memory in memories:
-            memory_system.delete_memory(memory['id'])
-        st.success(f"Successfully deleted {len(memories)} memories!")
+        if not user_id:
+            st.error("Not signed in; cannot clear memories.")
+            return
+        if hasattr(db, "delete_memories_for_user"):
+            n = db.delete_memories_for_user(user_id)
+        else:
+            path = getattr(db, "db_path", None)
+            if not path:
+                st.error("Database is not configured correctly.")
+                return
+            with sqlite3.connect(path) as conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM memories WHERE user_id = ?", (user_id,))
+                conn.commit()
+                n = cur.rowcount
+        memory_system.rebuild_index()
+        st.session_state["memories_cleared_success"] = (
+            f"Successfully deleted {n} memory record(s) for your account. Your memory list is now empty."
+        )
+        st.session_state["clear_confirmed"] = False
         st.rerun()
     except Exception as e:
         st.error(f"Error clearing memories: {e}")

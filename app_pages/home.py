@@ -170,7 +170,11 @@ def render_home_page():
     st.markdown("### 📝 Recent Memories")
     
     try:
-        recent_memories = db.get_all_memories(language=language)
+        recent_memories = (
+            db.get_all_memories(language=language, user_id=user_id)
+            if user_id
+            else []
+        )
         
         if recent_memories:
             col_total, col_lang = st.columns(2)
