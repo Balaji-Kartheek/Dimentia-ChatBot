@@ -92,7 +92,9 @@ class AudioProcessor:
             # Try Google Speech Recognition first
             try:
                 if language and language in SUPPORTED_LANGUAGES:
-                    text = self.recognizer.recognize_google(audio, language=language)
+                    text = self.recognizer.recognize_google(
+                        audio, language=self._map_language_code(language)
+                    )
                 else:
                     text = self.recognizer.recognize_google(audio)
                 logger.info(f"Audio transcribed successfully using Google: {len(text)} characters")
@@ -188,8 +190,8 @@ class AudioProcessor:
         # Fallback to default voice
         logger.warning(f"Could not find voice for language: {language}")
     
-    def process_streamlit_audio(self, audio_bytes: bytes) -> str:
-        """Process audio from Streamlit audio recorder using SpeechRecognition"""
+    def process_streamlit_audio(self, audio_bytes: bytes, language: str = "en") -> str:
+        """Transcribe Streamlit-recorded audio using the selected UI language (e.g. hi-IN for Hindi)."""
         try:
             logger.info("Processing audio with SpeechRecognition...")
             
@@ -197,6 +199,8 @@ class AudioProcessor:
             if not audio_bytes or len(audio_bytes) < 1000:  # Minimum size check
                 logger.warning("Audio data too small or empty")
                 return ""
+            
+            lang_code = self._map_language_code(language or "en")
             
             # Save to temporary file
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
@@ -210,7 +214,7 @@ class AudioProcessor:
                 
                 # Try Google Speech Recognition first (online, more accurate)
                 try:
-                    text = self.recognizer.recognize_google(audio, language=self._map_language_code("en"))
+                    text = self.recognizer.recognize_google(audio, language=lang_code)
                     logger.info(f"Transcription completed using Google: '{text[:50]}...'")
                     return text.strip()
                 except sr.UnknownValueError:

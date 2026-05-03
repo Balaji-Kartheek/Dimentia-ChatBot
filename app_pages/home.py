@@ -4,7 +4,8 @@ Handles login and main dashboard
 """
 import streamlit as st
 from datetime import datetime, timedelta
-from config import SessionKeys, FEATURE_FACE_AUTH
+from config import SessionKeys, FEATURE_FACE_AUTH, DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES
+from i18n import t, welcome_body
 from app_init import ensure_app_initialized
 from auth_service import AuthService
 from face_auth import FaceAuthService
@@ -19,59 +20,76 @@ def _short_text(text: str, limit: int = 120) -> str:
 
 def render_login_page():
     """Render the login page"""
-    st.markdown("""
-    <div class="main-header" style="text-align:center;">
-        <h1>🧠 Dementia Chatbot</h1>
-        <p style="font-size:18px;">Personal Memory Assistant with Multilingual Voice Support</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
+    if SessionKeys.SELECTED_LANGUAGE not in st.session_state:
+        st.session_state[SessionKeys.SELECTED_LANGUAGE] = DEFAULT_LANGUAGE
+    opts = list(SUPPORTED_LANGUAGES.keys())
+    cur = st.session_state[SessionKeys.SELECTED_LANGUAGE]
+    ix = opts.index(cur) if cur in opts else 0
+    ui = st.selectbox(
+        t(cur, "login.lang_label"),
+        options=opts,
+        index=ix,
+        format_func=lambda c: SUPPORTED_LANGUAGES[c],
+        key="login_interface_language",
+    )
+    if ui != st.session_state[SessionKeys.SELECTED_LANGUAGE]:
+        st.session_state[SessionKeys.SELECTED_LANGUAGE] = ui
+        st.rerun()
+    ui = st.session_state[SessionKeys.SELECTED_LANGUAGE]
+
+    title = t(ui, "login.title")
+    sub = t(ui, "login.subtitle")
+    st.markdown(
+        f"""<div class="main-header" style="text-align:center;"><h1>{title}</h1><p style="font-size:18px;">{sub}</p></div>""",
+        unsafe_allow_html=True,
+    )
+
     ensure_app_initialized()
     db = st.session_state["components"]["db"]
     auth = AuthService(db)
     face_auth = FaceAuthService(db)
 
-    tab_login, tab_register = st.tabs(["🔐 Login", "📝 Register"])
+    tab_login, tab_register = st.tabs([t(ui, "login.tab_login"), t(ui, "login.tab_register")])
     with tab_login:
-        username = st.text_input("Username", key="login_username")
-        password = st.text_input("Password", type="password", key="login_password")
+        username = st.text_input(t(ui, "login.username"), key="login_username")
+        password = st.text_input(t(ui, "login.password"), type="password", key="login_password")
         face_file = None
         if FEATURE_FACE_AUTH and face_auth.available:
-            face_file = st.file_uploader("Optional face image for 2FA", type=["jpg", "jpeg", "png"], key="login_face")
-        if st.button("Login", type="primary", key="login_btn"):
+            face_file = st.file_uploader(t(ui, "login.face_optional"), type=["jpg", "jpeg", "png"], key="login_face")
+        if st.button(t(ui, "login.btn"), type="primary", key="login_btn"):
             ok, user, message = auth.authenticate(username, password)
             if not ok:
                 st.error(message)
             else:
                 if FEATURE_FACE_AUTH and face_auth.available and db.get_face_embedding(user["id"]):
                     if not face_file:
-                        st.error("Face authentication required. Upload enrolled face image.")
+                        st.error(t(ui, "login.face_required"))
                         return
                     face_ok, score = face_auth.verify(user["id"], face_file.read())
                     if not face_ok:
-                        st.error(f"Face verification failed (score: {score:.2f}).")
+                        st.error(t(ui, "login.face_failed", score=score))
                         return
                 st.session_state[SessionKeys.USER_LOGGED_IN] = True
                 st.session_state[SessionKeys.USERNAME] = user["username"]
                 st.session_state[SessionKeys.USER_ROLE] = user["role"]
                 st.session_state[SessionKeys.USER_ID] = user["id"]
-                st.success("Login successful!")
+                st.success(t(ui, "login.success"))
                 st.rerun()
 
     with tab_register:
-        role = st.selectbox("Role", ["user", "caregiver"], key="reg_role")
-        full_name = st.text_input("Full name", key="reg_full_name")
-        new_username = st.text_input("New username", key="reg_username")
-        new_password = st.text_input("New password (min 6 chars)", type="password", key="reg_password")
-        trusted_name = st.text_input("Trusted person name", key="trusted_name")
-        trusted_relation = st.text_input("Relation", value="family", key="trusted_relation")
-        trusted_contact = st.text_input("Trusted person contact (phone/email)", key="trusted_contact")
+        role = st.selectbox(t(ui, "register.role"), ["user", "caregiver"], key="reg_role")
+        full_name = st.text_input(t(ui, "register.full_name"), key="reg_full_name")
+        new_username = st.text_input(t(ui, "register.new_username"), key="reg_username")
+        new_password = st.text_input(t(ui, "register.new_password"), type="password", key="reg_password")
+        trusted_name = st.text_input(t(ui, "register.trusted_name"), key="trusted_name")
+        trusted_relation = st.text_input(t(ui, "register.relation"), value="family", key="trusted_relation")
+        trusted_contact = st.text_input(t(ui, "register.trusted_contact"), key="trusted_contact")
         face_enroll = None
         if FEATURE_FACE_AUTH and face_auth.available:
-            face_enroll = st.file_uploader("Face enrollment image (optional)", type=["jpg", "jpeg", "png"], key="face_enroll")
-        if st.button("Create Account", key="create_account_btn"):
+            face_enroll = st.file_uploader(t(ui, "register.face_enroll"), type=["jpg", "jpeg", "png"], key="face_enroll")
+        if st.button(t(ui, "register.create"), key="create_account_btn"):
             if not new_username or not new_password or not trusted_name or not trusted_contact:
-                st.error("Please fill all required registration fields.")
+                st.error(t(ui, "register.fill_all"))
             else:
                 success, msg = auth.register_user(
                     username=new_username,
@@ -88,8 +106,8 @@ def render_login_page():
                     user = db.get_user_by_username(new_username)
                     if user and face_enroll and FEATURE_FACE_AUTH and face_auth.available:
                         if face_auth.enroll(user["id"], face_enroll.read()):
-                            st.success("Face enrolled successfully.")
-                    st.success("Registration complete. You can now login.")
+                            st.success(t(ui, "register.face_ok"))
+                    st.success(t(ui, "register.done"))
     
     # Features overview
     st.markdown("---")
@@ -141,7 +159,8 @@ def render_home_page():
     components = st.session_state.get('components', {})
     
     if not components:
-        st.error("System components not initialized")
+        language = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
+        st.error(t(language, "common.system_not_init"))
         return
     
     memory_system = components['memory_system']
@@ -150,14 +169,14 @@ def render_home_page():
     # Get user info
     username = st.session_state.get(SessionKeys.USERNAME, "")
     user_role = st.session_state.get(SessionKeys.USER_ROLE, "user")
-    language = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, "en")
+    language = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
     
-    # Welcome message
-    st.markdown(f"""
-    ### 👋 Welcome back, {username}!
-    
-    {get_welcome_message(user_role, language)}
-    """)
+    st.markdown(
+        f"""### {t(language, "home.welcome", name=username)}
+
+{welcome_body(user_role, language)}
+"""
+    )
 
     user_id = st.session_state.get(SessionKeys.USER_ID)
     if user_id:
@@ -165,59 +184,74 @@ def render_home_page():
         maybe_create_inactivity_alert(db, user_id)
     
     
-    # Recent memories
+    # Recent memories for the selected interface language only (stored per-language)
     st.markdown("---")
-    st.markdown("### 📝 Recent Memories")
+    st.markdown(t(language, "home.recent_memories"))
     
     try:
         recent_memories = (
-            db.get_all_memories(language=language, user_id=user_id)
-            if user_id
-            else []
+            db.get_all_memories(language=language, user_id=user_id) if user_id else []
         )
-        
+
         if recent_memories:
             col_total, col_lang = st.columns(2)
             with col_total:
-                st.metric("Total memories", len(recent_memories))
+                st.metric(t(language, "home.metric_total"), len(recent_memories))
             with col_lang:
-                st.metric("Current language", language.upper())
+                st.metric(
+                    t(language, "home.metric_ui_lang"),
+                    SUPPORTED_LANGUAGES.get(language, language),
+                )
+            st.caption(
+                t(
+                    language,
+                    "home.memory_scope_hint",
+                    lang=SUPPORTED_LANGUAGES.get(language, language),
+                )
+            )
 
-            # Show last 5 memories as compact cards
             for idx, memory in enumerate(recent_memories[:5], start=1):
                 with st.container():
                     st.markdown(f"**{idx}. {_short_text(memory['text'], 110)}**")
-                    st.caption(f"Added: {memory['created_at']} • Source: {memory['source']}")
+                    st.caption(
+                        f"{t(language, 'home.added')}: {memory['created_at']} • "
+                        f"{t(language, 'home.source')}: {memory['source']}"
+                    )
                     if len((memory.get("text") or "")) > 110:
-                        with st.expander("View full memory"):
+                        with st.expander(t(language, "home.view_full")):
                             st.write(memory["text"])
                     if memory.get("tags"):
-                        st.caption("Tags: " + ", ".join(memory["tags"][:4]))
+                        st.caption(t(language, "home.tags") + ": " + ", ".join(memory["tags"][:4]))
                     st.markdown("")
         else:
-            st.info("No memories yet. Start by adding some memories in the 'Add Memory' section!")
+            st.info(
+                t(
+                    language,
+                    "home.empty_for_language",
+                    lang=SUPPORTED_LANGUAGES.get(language, language),
+                )
+            )
     
     except Exception as e:
-        st.error(f"Error loading recent memories: {e}")
+        st.error(t(language, "home.error_memories", err=e))
     
-    # Quick actions
     st.markdown("---")
-    st.markdown("### ⚡ Quick Actions")
+    st.markdown(t(language, "home.quick_actions"))
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if st.button("🧩 Add New Memory", use_container_width=True, key="home_add_memory"):
+        if st.button(t(language, "home.btn_add"), use_container_width=True, key="home_add_memory"):
             st.session_state['nav_page'] = 'add_memory'
             st.rerun()
     
     with col2:
-        if st.button("🔍 Ask Assistant", use_container_width=True, key="home_ask_assistant"):
+        if st.button(t(language, "home.btn_ask"), use_container_width=True, key="home_ask_assistant"):
             st.session_state['nav_page'] = 'ask_assistant'
             st.rerun()
     
     with col3:
-        if st.button("⚙️ Settings", use_container_width=True, key="home_settings"):
+        if st.button(t(language, "home.btn_settings"), use_container_width=True, key="home_settings"):
             st.session_state['nav_page'] = 'settings'
             st.rerun()
 
@@ -227,35 +261,15 @@ def authenticate_user(username: str, password: str) -> bool:
     return bool(username and password)
 
 
-def get_welcome_message(user_role: str, language: str) -> str:
-    """Get localized welcome message"""
-    messages = {
-        'en': {
-            'user': "Your personal memory assistant is ready to help you recall important information.",
-            'caregiver': "Caregiver console is ready. You can monitor and manage memories here."
-        },
-        'hi': {
-            'user': "आपका व्यक्तिगत स्मृति सहायक महत्वपूर्ण जानकारी याद करने में आपकी मदद के लिए तैयार है।",
-            'caregiver': "अभिभावक कंसोल तैयार है। आप यहाँ यादों की निगरानी और प्रबंधन कर सकते हैं।"
-        },
-        'ta': {
-            'user': "உங்கள் தனிப்பட்ட நினைவக உதவியாளர் முக்கியமான தகவல்களை நினைவுகூர உதவ தயாராக உள்ளார்.",
-            'caregiver': "பராமரிப்பாளர் கன்சோல் தயாராக உள்ளது. நீங்கள் இங்கே நினைவுகளை கண்காணித்து நிர்வகிக்கலாம்."
-        }
-    }
-    
-    return messages.get(language, messages['en']).get(user_role, messages['en']['user'])
-
-
 def render_day_start_summary(db, user_id: str, language: str):
-    today_key = f"day_summary_seen_{datetime.now().date().isoformat()}_{user_id}"
+    today_key = f"day_summary_seen_{datetime.now().date().isoformat()}_{user_id}_{language}"
     if st.session_state.get(today_key):
         return
-    memories = db.get_all_memories(user_id=user_id)[:8]
+    memories = db.get_all_memories(language=language, user_id=user_id)[:8]
     if not memories:
         return
     recent = [m["text"] for m in memories[:3]]
-    msg = "Good morning. Yesterday recap and today's reminders:\n- " + "\n- ".join(recent)
+    msg = t(language, "day_summary.prefix") + "\n- " + "\n- ".join(recent)
     st.info(msg)
     st.session_state[today_key] = True
 

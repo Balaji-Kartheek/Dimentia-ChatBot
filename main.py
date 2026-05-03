@@ -11,6 +11,7 @@ sys.path.append(str(Path(__file__).parent))
 
 from config import SessionKeys, SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE
 from app_init import ensure_app_initialized
+from i18n import t
 
 # Page imports
 from app_pages import home, add_memory, ask_assistant, settings, caregiver_console
@@ -96,8 +97,9 @@ def initialize_session_state():
 
 def render_sidebar():
     """Render the sidebar navigation"""
+    lang = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
     with st.sidebar:
-        st.markdown("## 🧠 Dementia Chatbot")
+        st.markdown(f"## {t(lang, 'main.sidebar_title')}")
         st.markdown("---")
 
         if st.session_state.get(SessionKeys.USER_LOGGED_IN, False):
@@ -131,17 +133,17 @@ def render_sidebar():
                 support = None
 
             if home:
-                pages["🏠 Home"] = "home"
+                pages[t(lang, "nav.home")] = "home"
             if add_memory:
-                pages["🧩 Add Memory"] = "add_memory"
+                pages[t(lang, "nav.add_memory")] = "add_memory"
             if ask_assistant:
-                pages["🔍 Ask Assistant"] = "ask_assistant"
+                pages[t(lang, "nav.ask_assistant")] = "ask_assistant"
             if support:
-                pages["🆘 Support"] = "support"
+                pages[t(lang, "nav.support")] = "support"
             if settings:
-                pages["⚙️ Settings"] = "settings"
+                pages[t(lang, "nav.settings")] = "settings"
             if st.session_state.get(SessionKeys.USER_ROLE) == "caregiver" and caregiver_console:
-                pages["👥 Caregiver Console"] = "caregiver_console"
+                pages[t(lang, "nav.caregiver")] = "caregiver_console"
 
             # Persist current selection
             current_page_value = st.session_state.get('nav_page', 'home')
@@ -159,7 +161,7 @@ def render_sidebar():
                 del st.session_state["nav_select"]
 
             # Use selectbox for robust state handling across reruns/upgrades
-            selected_label = st.selectbox("Navigate", page_keys, index=default_index, key="nav_select")
+            selected_label = st.selectbox(t(lang, "main.navigate"), page_keys, index=default_index, key="nav_select")
             selected_value = pages[selected_label]
             
             # Only update nav_page if it actually changed
@@ -171,11 +173,11 @@ def render_sidebar():
 
             # Welcome and Role (at the bottom)
             st.markdown("---")
-            st.markdown(f"**Welcome, {st.session_state[SessionKeys.USERNAME]}!**")
-            st.caption(f"Role: {st.session_state[SessionKeys.USER_ROLE].title()}")
+            st.markdown(f"**{t(lang, 'main.welcome_user', name=st.session_state[SessionKeys.USERNAME])}**")
+            st.caption(t(lang, "main.role", role=st.session_state[SessionKeys.USER_ROLE].title()))
 
             # Logout button (keep at very bottom)
-            if st.button("🚪 Logout", type="secondary"):
+            if st.button(t(lang, "main.logout"), type="secondary"):
                 for key in [SessionKeys.USER_LOGGED_IN, SessionKeys.USERNAME, SessionKeys.USER_ROLE, SessionKeys.USER_ID]:
                     if key in st.session_state:
                         del st.session_state[key]
@@ -183,8 +185,7 @@ def render_sidebar():
 
             return selected_value
         else:
-            # User is not logged in
-            st.markdown("Please log in to continue")
+            st.markdown(t(lang, "main.login_prompt"))
             # Language selection moved to Support page
             return "login"
 
@@ -202,10 +203,13 @@ def main():
     
     # Render main header
     if st.session_state.get(SessionKeys.USER_LOGGED_IN, False):
+        lg = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
+        title_html = t(lg, "main.header_title")
+        sub_html = t(lg, "main.header_subtitle")
         st.markdown(f"""
         <div class="main-header">
-            <h1>🧠 Dementia Chatbot</h1>
-            <p>Personal Memory Assistant</p>
+            <h1>{title_html}</h1>
+            <p>{sub_html}</p>
         </div>
         """, unsafe_allow_html=True)
     
@@ -226,9 +230,11 @@ def main():
         elif selected_page == "caregiver_console":
             caregiver_console.render_caregiver_console()
         else:
-            st.error("Page not found")
+            lg = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
+            st.error(t(lg, "common.page_not_found"))
     except Exception as e:
-        st.error(f"Error rendering page: {e}")
+        lg = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
+        st.error(t(lg, "common.error_page", err=e))
         st.exception(e)
 
 if __name__ == "__main__":

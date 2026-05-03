@@ -12,7 +12,7 @@ import re
 from dateutil.parser import parse as parse_datetime
 from dateutil.relativedelta import relativedelta, MO, TU, WE, TH, FR, SA, SU
 
-from config import GEMINI_MODEL, GEMINI_API_KEY, FEATURE_ADAPTIVE_MODE
+from config import GEMINI_MODEL, GEMINI_API_KEY, FEATURE_ADAPTIVE_MODE, SUPPORTED_LANGUAGES
 from memory_system import MemorySystem
 
 logger = logging.getLogger(__name__)
@@ -71,7 +71,7 @@ class LLMIntegration:
             context = self._create_context_from_memories(relevant_memories)
             
             # Try deterministic appointment resolution for "when" questions
-            deterministic_answer = self._resolve_appointment_answer(query, relevant_memories)
+            deterministic_answer = self._resolve_appointment_answer(query, relevant_memories, language)
             if deterministic_answer:
                 return {
                     'response': deterministic_answer,
@@ -105,8 +105,13 @@ class LLMIntegration:
             
         except Exception as e:
             logger.error(f"Error generating response: {e}")
+            err_ui = {
+                "en": "I'm sorry, I'm having trouble processing your request right now. Please try again later.",
+                "hi": "क्षमा करें, अभी आपके प्रश्न को संसाधित करने में समस्या हो रही है। कृपया थोड़ी देर बाद फिर कोशिश करें।",
+                "ta": "மன்னிக்கவும், இப்போது உங்கள் கேள்வியை செயலாக்குவதில் சிக்கல் உள்ளது. பின்னர் முயற்சிக்கவும்.",
+            }
             return {
-                'response': "I'm sorry, I'm having trouble processing your request right now. Please try again later.",
+                'response': err_ui.get(language, err_ui["en"]),
                 'relevant_memories': [],
                 'context_used': "",
                 'timestamp': datetime.now().isoformat(),
@@ -133,13 +138,12 @@ class LLMIntegration:
         return "\n\n".join(context_parts)
 
     def _create_no_upcoming_appointment_answer(self, query: str, memories: List[Dict], language: str) -> Optional[str]:
-        q = (query or "").lower()
-        if not any(kw in q for kw in ["when", "time", "appointment", "dentist", "doctor"]):
+        if not self._query_suggests_appointment_timing(query, language):
             return None
         if not memories:
             return None
         has_appointment_memory = any(
-            any(k in (m.get("text", "") or "").lower() for k in ["appointment", "dentist", "doctor", "visit"])
+            self._memory_mentions_appointment(m.get("text") or "", language)[0]
             for m in memories
         )
         if not has_appointment_memory:
@@ -155,11 +159,43 @@ class LLMIntegration:
     # ------------------------
     # Deterministic appointment resolver
     # ------------------------
-    def _resolve_appointment_answer(self, query: str, memories: List[Dict]) -> Optional[str]:
+    def _query_suggests_appointment_timing(self, query: str, language: str) -> bool:
+        """Detect appointment/timing intent in English or selected UI language (e.g. Hindi)."""
+        q = query or ""
+        low = q.lower()
+        en_kw = ["when", "time", "appointment", "dentist", "doctor", "visit", "schedule"]
+        if any(k in low for k in en_kw):
+            return True
+        if language == "hi":
+            hi_kw = ["कब", "समय", "अपॉइंटमेंट", "डॉक्टर", "दंत", "चिकित्सक", "मुलाकात", "मिलना"]
+            return any(k in q for k in hi_kw)
+        if language == "ta":
+            ta_kw = ["எப்போது", "நேரம்", "சந்திப்பு", "டாக்டர்", "மருத்துவர்"]
+            return any(k in q for k in ta_kw)
+        return False
+
+    def _memory_mentions_appointment(self, text: str, language: str) -> Tuple[bool, bool]:
+        """Returns (mentions_appointment_or_visit, is_dentist_signal)."""
+        raw = text or ""
+        low = raw.lower()
+        en_app = ["appointment", "dentist", "doctor", "visit", "clinic", "hospital"]
+        if any(k in low for k in en_app):
+            is_den = "dentist" in low or "दंत" in raw
+            return True, is_den
+        if language == "hi":
+            hi_app = ["अपॉइंटमेंट", "डॉक्टर", "दंत", "चिकित्सक", "मुलाकात", "अस्पताल", "क्लिनिक"]
+            if any(k in raw for k in hi_app):
+                return True, ("दंत" in raw or "dentist" in low)
+        if language == "ta":
+            ta_app = ["சந்திப்பு", "டாக்டர்", "மருத்துவமனை", "மருத்துவர்"]
+            if any(k in raw for k in ta_app):
+                return True, ("பல்" in raw or "dentist" in low)
+        return False, False
+
+    def _resolve_appointment_answer(self, query: str, memories: List[Dict], language: str = "en") -> Optional[str]:
         """If the user asks about appointment timing, deterministically compute the next dentist/doctor appointment from memories.
         Returns a short answer string or None to fall back to LLM."""
-        q = (query or "").lower()
-        if not any(kw in q for kw in ["when", "time", "appointment", "dentist", "doctor"]):
+        if not self._query_suggests_appointment_timing(query, language):
             return None
 
         now = datetime.now()
@@ -167,12 +203,11 @@ class LLMIntegration:
 
         for m in memories:
             text = m.get('text', '') or ''
-            low = text.lower()
-            if not any(k in low for k in ["appointment", "dentist", "doctor", "visit"]):
+            mentions, is_dentist = self._memory_mentions_appointment(text, language)
+            if not mentions:
                 continue
 
-            # Prefer entries that actually mention dentist
-            is_dentist = ("dentist" in low)
+            low = text.lower()
 
             created_at = m.get("created_at") or m.get("timestamp")
             reference_now = now
@@ -182,7 +217,7 @@ class LLMIntegration:
                 except Exception:
                     reference_now = now
 
-            when_dt, note = self._extract_datetime_from_text(low, reference_now)
+            when_dt, note = self._extract_datetime_from_text(low + " " + (text or ""), reference_now)
             if when_dt is None:
                 continue
 
@@ -190,7 +225,6 @@ class LLMIntegration:
                 # Skip past appointments
                 continue
 
-            # Attach soft preference signals
             m['_is_dentist'] = is_dentist
             candidates.append((when_dt, m, note))
 
@@ -226,27 +260,70 @@ class LLMIntegration:
         when_str_date = top_when.strftime("%A, %B %d, %Y")
         when_str_time = top_when.strftime("%I:%M %p").lstrip('0')
 
-        if same_date_conflict:
-            return (
-                f"I found conflicting times for your appointment on {when_str_date}. "
-                f"One memory suggests {when_str_time}, but another shows a different time. "
-                f"Could you confirm the exact time?"
-            )
+        return self._format_deterministic_appointment_reply(
+            language, same_date_conflict, when_str_date, when_str_time, top_mem
+        )
 
-        # Include provider if the memory mentions a name like Dr.
+    def _format_deterministic_appointment_reply(
+        self,
+        language: str,
+        same_date_conflict: bool,
+        when_str_date: str,
+        when_str_time: str,
+        top_mem: Dict,
+    ) -> str:
         provider = None
-        mtext = (top_mem.get('text') or '')
-        m_prov = re.search(r"(Dr\.?\s+[A-Z][a-z]+)", mtext)
+        mtext = top_mem.get('text') or ''
+        m_prov = re.search(r"(Dr\.?\s+[A-Za-z][A-Za-z\s]+)", mtext)
         if m_prov:
-            provider = m_prov.group(1)
+            provider = m_prov.group(1).strip()
 
-        if provider and top_mem.get('_is_dentist'):
-            return f"Your next dentist appointment with {provider} is on {when_str_date} at {when_str_time}."
-        if top_mem.get('_is_dentist'):
-            return f"Your next dentist appointment is on {when_str_date} at {when_str_time}."
+        if same_date_conflict:
+            msg = {
+                "en": (
+                    f"I found conflicting times for your appointment on {when_str_date}. "
+                    f"One memory suggests {when_str_time}, but another shows a different time. "
+                    "Could you confirm the exact time?"
+                ),
+                "hi": (
+                    f"{when_str_date} को आपकी नियुक्ति के लिए समय में विरोधाभास लगता है। "
+                    f"एक याद में {when_str_time} है, दूसरी में अलग समय। कृपया सही समय पुष्टि करें।"
+                ),
+                "ta": (
+                    f"{when_str_date} அன்று நேரம் குறித்த முரண்பாடு உள்ளது. "
+                    "சரியான நேரத்தை உறுதிப்படுத்தவும்."
+                ),
+            }
+            return msg.get(language, msg["en"])
+
+        iden = top_mem.get('_is_dentist')
+        if provider and iden:
+            pat = {
+                "en": f"Your next dentist appointment with {provider} is on {when_str_date} at {when_str_time}.",
+                "hi": f"आपकी अगली दंत चिकित्सक नियुक्ति {provider} के साथ {when_str_date} को {when_str_time} पर है।",
+                "ta": f"உங்கள் அடுத்த பல் மருத்துவர் சந்திப்பு {provider} — {when_str_date}, {when_str_time}.",
+            }
+            return pat.get(language, pat["en"])
+        if iden:
+            pat = {
+                "en": f"Your next dentist appointment is on {when_str_date} at {when_str_time}.",
+                "hi": f"आपकी अगली दंत चिकित्सक नियुक्ति {when_str_date} को {when_str_time} पर है।",
+                "ta": f"உங்கள் அடுத்த பல் சந்திப்பு {when_str_date}, {when_str_time}.",
+            }
+            return pat.get(language, pat["en"])
         if provider:
-            return f"Your next appointment with {provider} is on {when_str_date} at {when_str_time}."
-        return f"Your next appointment is on {when_str_date} at {when_str_time}."
+            pat = {
+                "en": f"Your next appointment with {provider} is on {when_str_date} at {when_str_time}.",
+                "hi": f"आपकी अगली नियुक्ति {provider} के साथ {when_str_date} को {when_str_time} पर है।",
+                "ta": f"உங்கள் அடுத்த சந்திப்பு {provider} — {when_str_date}, {when_str_time}.",
+            }
+            return pat.get(language, pat["en"])
+        pat = {
+            "en": f"Your next appointment is on {when_str_date} at {when_str_time}.",
+            "hi": f"आपकी अगली नियुक्ति {when_str_date} को {when_str_time} पर है।",
+            "ta": f"உங்கள் அடுத்த சந்திப்பு {when_str_date}, {when_str_time}.",
+        }
+        return pat.get(language, pat["en"])
 
     def _extract_datetime_from_text(self, text: str, now: datetime) -> Tuple[Optional[datetime], str]:
         """Extract a future datetime from free text. Supports relative 'next <weekday>' and explicit times like '3 PM'."""
@@ -370,26 +447,53 @@ Guidelines:
 - Provide the most precise answer available, citing exact date/time if present
 - If no relevant memory exists, say so and suggest adding it""",
 
-            'hi': """आप डिमेंशिया से पीड़ित लोगों के लिए एक सहायक स्मृति सहायक हैं। आप उन्हें दवा के समय, अपॉइंटमेंट और परिवार के विवरण जैसी व्यक्तिगत जानकारी याद करने में मदद करते हैं।
+            'hi': """आप डिमेंशिया से पीड़ित लोगों के लिए एक सहायक स्मृति सहायक हैं।
+
+केवल प्रदान की गई यादों में मौजूद तथ्यों का उपयोग करें। यादों के बीच विरोध हो तो caregiver_confirmed=true वाली प्रविष्टियों को प्राथमिकता दें। तिथि या समय गायब हो तो अस्पष्टता स्वीकार करें और पुष्टि माँगें। नाम, तारीख या समय गढ़ें नहीं।
 
 दिशानिर्देश:
-- धैर्यवान, कोमल और आश्वस्त रहें
-- सरल, स्पष्ट भाषा का उपयोग करें
-- केवल वही जानकारी दें जो आप प्रदान किए गए संदर्भ में पा सकते हैं
-- यदि आप कुछ नहीं जानते, तो ईमानदारी से कहें
-- हमेशा प्रोत्साहित और सहायक रहें""",
+- धैर्यवान, कोमल और आश्वस्त रहें; सरल हिंदी में उत्तर दें
+- आपका हर उत्तर पूरी तरह हिंदी (देवनागरी) में हो — अंग्रेज़ी वाक्य न लिखें
+- केवल संदर्भ में जो दिखे वही बताएँ; अनुमान न लगाएँ""",
 
-            'ta': """நீங்கள் டிமென்ஷியாவால் பாதிக்கப்பட்டவர்களுக்கு உதவும் நினைவக உதவியாளர். மருந்து அட்டவணை, சந்திப்புகள் மற்றும் குடும்ப விவரங்கள் போன்ற தனிப்பட்ட தகவல்களை நினைவுகூர உதவுங்கள்.
+            'ta': """நீங்கள் டிமென்ஷியாவால் பாதிக்கப்பட்டவர்களுக்கு உதவும் நினைவக உதவியாளர்.
+
+வழங்கப்பட்ட நினைவுகளில் உள்ள தகவல்களை மட்டுமே பயன்படுத்தவும். முரண்பாடுகளில் caregiver_confirmed=true உள்ளவற்றை முன்னிலைப்படுத்தவும். தேதி/நேரம் இல்லையெனில் தெளிவுபடுத்த கேளுங்கள்.
 
 வழிகாட்டுதல்கள்:
-- பொறுமையாக, மென்மையாக, உறுதியளிக்கும் வகையில் இருங்கள்
-- எளிய, தெளிவான மொழியைப் பயன்படுத்துங்கள்
-- வழங்கப்பட்ட சூழலில் காணக்கூடிய தகவல்களை மட்டுமே வழங்குங்கள்
-- எதையாவது தெரியாவிட்டால், நேர்மையாகச் சொல்லுங்கள்
-- எப்போதும் ஊக்கமளிக்கும் மற்றும் உதவி செய்யும் வகையில் இருங்கள்"""
+- பொறுமையாகவும் தெளிவாகவும் பதிலளிக்கவும்
+- உங்கள் முழு பதிலும் தமிழில் மட்டுமே இருக்க வேண்டும்
+- ஊகிக்காதீர்கள்; சூழலில் இல்லாத விவரங்களைச் சேர்க்காதீர்கள்"""
         }
         
-        return prompts.get(language, prompts['en'])
+        base = prompts.get(language)
+        if base is None:
+            base = prompts["en"]
+            extra = self._system_prompt_extra_for_language(language)
+            return base + "\n\n" + extra
+        return base
+
+    def _system_prompt_extra_for_language(self, language: str) -> str:
+        """For locales without a full native system prompt, pin output language."""
+        extra = {
+            "tel": "The user's selected UI language is Telugu. Write every sentence of your answer in Telugu.",
+            "es": "The user's selected UI language is Spanish. Write every sentence of your answer in Spanish.",
+            "fr": "The user's selected UI language is French. Write every sentence of your answer in French.",
+            "de": "The user's selected UI language is German. Write every sentence of your answer in German.",
+        }
+        return extra.get(language, "Match the user's selected UI language for every word of your answer.")
+
+    def _mandatory_answer_language_line(self, language: str) -> str:
+        lines = {
+            "en": "LANGUAGE: Write your entire answer in English only.",
+            "hi": "LANGUAGE: अपना पूरा उत्तर केवल हिंदी में देवनागरी लिपि में लिखें। अंग्रेज़ी वाक्यों का उपयोग न करें।",
+            "ta": "LANGUAGE: Write your entire answer in Tamil only.",
+            "tel": "LANGUAGE: Write your entire answer in Telugu only.",
+            "es": "LANGUAGE: Write your entire answer in Spanish only.",
+            "fr": "LANGUAGE: Write your entire answer in French only.",
+            "de": "LANGUAGE: Write your entire answer in German only.",
+        }
+        return lines.get(language, lines["en"])
     
     def _create_user_prompt(self, query: str, context: str, user_context: str, language: str) -> str:
         """Create user prompt with context"""
@@ -398,6 +502,7 @@ Guidelines:
         else:
             user_context_part = ""
         
+        lang_line = self._mandatory_answer_language_line(language)
         return f"""{user_context_part}Relevant memories:
 {context}
 
@@ -408,7 +513,8 @@ Instructions for answering:
 - If multiple memories conflict, choose caregiver-confirmed entries; otherwise say you're unsure and ask for confirmation.
 - If the question is about dates/times, resolve relative dates using CURRENT_DATETIME in context.
 - If either date or time is missing, explicitly state what is missing and ask to confirm.
-- Keep answers short and clear for cognitive accessibility."""
+- Keep answers short and clear for cognitive accessibility.
+- {lang_line}"""
 
     def _simplify_response(self, response: str, language: str) -> str:
         if language != "en":

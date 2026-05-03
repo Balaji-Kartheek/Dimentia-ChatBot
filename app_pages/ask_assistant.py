@@ -4,7 +4,8 @@ Ask Assistant page for Dementia Chatbot (custom router version)
 import streamlit as st
 from datetime import datetime
 import re
-from config import SessionKeys, SUPPORTED_LANGUAGES
+from config import SessionKeys, SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE
+from i18n import t
 
 
 def _short_text(text: str, limit: int = 180) -> str:
@@ -17,12 +18,13 @@ def _short_text(text: str, limit: int = 180) -> str:
 
 def render_ask_assistant_page():
     """Render the ask assistant page"""
-    st.markdown("### 🔍 Ask Your Memory Assistant")
-    
     components = st.session_state.get('components', {})
+    language = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
     if not components:
-        st.error("System components not initialized")
+        st.error(t(language, "common.system_not_init"))
         return
+    
+    st.markdown(t(language, "ask.title"))
     
     memory_system = components['memory_system']
     audio_processor = components['audio_processor']
@@ -30,12 +32,10 @@ def render_ask_assistant_page():
     db = components['db']
     
     user_role = st.session_state.get(SessionKeys.USER_ROLE, "user")
-    language = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, "en")
     username = st.session_state.get(SessionKeys.USERNAME, "")
     
-    # Input method selection
-    st.markdown("#### Ask in the way you prefer")
-    tab_voice, tab_text = st.tabs(["🎙️ Voice Question", "✏️ Text Question"])
+    st.markdown(t(language, "ask.subtitle"))
+    tab_voice, tab_text = st.tabs([t(language, "ask.tab_voice"), t(language, "ask.tab_text")])
     with tab_voice:
         render_voice_question_record(memory_system, audio_processor, llm_integration, db, language, username)
     with tab_text:
@@ -47,36 +47,36 @@ def render_ask_assistant_page():
     
     if st.session_state['conversation_history']:
         st.markdown("---")
-        st.markdown("### 💬 Recent Questions")
+        st.markdown(t(language, "ask.recent"))
         recent_entries = list(reversed(st.session_state['conversation_history'][-5:]))
         options = [f"{idx + 1}. {_short_text(e['question'], 70)} ({e['timestamp']})" for idx, e in enumerate(recent_entries)]
-        selected_label = st.selectbox("Select a recent question", options=options, key="recent_question_select")
+        selected_label = st.selectbox(t(language, "ask.select_recent"), options=options, key="recent_question_select")
         selected_idx = options.index(selected_label)
         selected_entry = recent_entries[selected_idx]
 
-        st.markdown(f"**Question:** {_short_text(selected_entry['question'], 180)}")
-        with st.expander("View full question"):
+        st.markdown(f"**{t(language, 'ask.question')}:** {_short_text(selected_entry['question'], 180)}")
+        with st.expander(t(language, "ask.view_q")):
             st.write(selected_entry['question'])
 
-        st.markdown(f"**Answer:** {_short_text(selected_entry['answer'], 240)}")
-        with st.expander("View full answer"):
+        st.markdown(f"**{t(language, 'ask.answer')}:** {_short_text(selected_entry['answer'], 240)}")
+        with st.expander(t(language, "ask.view_a")):
             st.write(selected_entry['answer'])
 
         if selected_entry.get('relevant_memories'):
-            st.markdown("**Sources used:**")
+            st.markdown(f"**{t(language, 'ask.sources')}:**")
             for memory in selected_entry['relevant_memories'][:3]:
                 st.caption(f"• {_short_text(memory['text'], 120)}")
 
         col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("🔊 Play Answer", key=f"play_recent_{selected_idx}", use_container_width=True):
+            if st.button(t(language, "ask.play"), key=f"play_recent_{selected_idx}", use_container_width=True):
                 play_audio_response(selected_entry['answer'], language)
         with col2:
-            if st.button("↩️ Reuse Question", key=f"reuse_recent_{selected_idx}", use_container_width=True):
+            if st.button(t(language, "ask.reuse"), key=f"reuse_recent_{selected_idx}", use_container_width=True):
                 st.session_state["ask_question_input"] = selected_entry["question"]
                 st.rerun()
         with col3:
-            if st.button("🗑️ Remove", key=f"remove_recent_{selected_idx}", use_container_width=True):
+            if st.button(t(language, "ask.remove"), key=f"remove_recent_{selected_idx}", use_container_width=True):
                 absolute_index = len(st.session_state['conversation_history']) - 1 - selected_idx
                 st.session_state['conversation_history'].pop(absolute_index)
                 st.rerun()
@@ -93,7 +93,7 @@ def render_voice_question(memory_system, audio_processor, llm_integration, db, l
         if st.button("🔍 Process Question", type="primary"):
             with st.spinner("Processing your question..."):
                 try:
-                    transcribed_question = audio_processor.process_streamlit_audio(audio_bytes)
+                    transcribed_question = audio_processor.process_streamlit_audio(audio_bytes, language)
                     if transcribed_question:
                         st.success("✅ Question understood!")
                         st.markdown(f"**Your question:** {transcribed_question}")
@@ -124,7 +124,7 @@ def render_voice_question_record(memory_system, audio_processor, llm_integration
                     try:
                         # Use actual audio transcription
                         try:
-                            transcribed_question = audio_processor.process_streamlit_audio(audio_bytes)
+                            transcribed_question = audio_processor.process_streamlit_audio(audio_bytes, language)
                             if transcribed_question and len(transcribed_question.strip()) > 0:
                                 st.success("✅ Question understood!")
                                 st.markdown(f"**Your question:** {transcribed_question}")

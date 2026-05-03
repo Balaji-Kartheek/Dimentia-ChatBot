@@ -7,7 +7,17 @@ import uuid
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from pathlib import Path
-from config import DATABASE_PATH, FERNET_CIPHER
+from config import DATABASE_PATH, FERNET_CIPHER, DEFAULT_LANGUAGE
+
+
+def _language_sql_filter(language: Optional[str]):
+    """Exact match per language; default 'en' also includes legacy rows with NULL language."""
+    if not language:
+        return "", []
+    if language == DEFAULT_LANGUAGE:
+        return " AND (language IS NULL OR language = ?)", [DEFAULT_LANGUAGE]
+    return " AND language = ?", [language]
+
 
 class MemoryDatabase:
     def __init__(self):
@@ -229,9 +239,9 @@ class MemoryDatabase:
             query = 'SELECT * FROM memories WHERE 1=1'
             params = []
             
-            if language:
-                query += ' AND language = ?'
-                params.append(language)
+            lang_clause, lang_params = _language_sql_filter(language)
+            query += lang_clause
+            params.extend(lang_params)
             if user_id:
                 query += ' AND user_id = ?'
                 params.append(user_id)
@@ -280,9 +290,9 @@ class MemoryDatabase:
             '''
             params = []
             
-            if language:
-                query += ' AND language = ?'
-                params.append(language)
+            lang_clause, lang_params = _language_sql_filter(language)
+            query += lang_clause
+            params.extend(lang_params)
             if user_id:
                 query += ' AND user_id = ?'
                 params.append(user_id)

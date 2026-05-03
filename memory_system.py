@@ -16,9 +16,21 @@ import math
 
 from config import (
     FAISS_INDEX_PATH, EMBEDDING_MODEL, MAX_MEMORY_CHUNKS, TOP_K_RESULTS, SIMILARITY_THRESHOLD,
-    FEATURE_DECAY_RANK, DECAY_HALF_LIFE_DAYS, DECAY_WEIGHT, TRUST_WEIGHT, REINFORCEMENT_WEIGHT
+    FEATURE_DECAY_RANK, DECAY_HALF_LIFE_DAYS, DECAY_WEIGHT, TRUST_WEIGHT, REINFORCEMENT_WEIGHT,
+    DEFAULT_LANGUAGE,
 )
 from database import MemoryDatabase
+
+
+def _memory_matches_language(memory: dict, language: Optional[str]) -> bool:
+    """True if memory row matches the requested interface language (en includes NULL legacy)."""
+    if not language:
+        return True
+    mlang = memory.get("language")
+    if language == DEFAULT_LANGUAGE:
+        return mlang in (None, "", DEFAULT_LANGUAGE)
+    return mlang == language
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -155,8 +167,7 @@ class MemorySystem:
             if memory_id:
                 memory = self.db.get_memory(memory_id)
                 if memory:
-                    # Apply filters
-                    if language and memory['language'] != language:
+                    if language and not _memory_matches_language(memory, language):
                         continue
                     # Strict isolation: when querying as a user, only that user's rows count
                     if user_id and memory.get("user_id") != user_id:
@@ -334,9 +345,9 @@ class MemorySystem:
         logger.info(f"Removed {n} memories for user {user_id}")
         return n
     
-    def get_memory_stats(self, user_id: Optional[str] = None) -> Dict:
-        """Get statistics about stored memories. Pass user_id to scope to one account."""
-        memories = self.db.get_all_memories(user_id=user_id)
+    def get_memory_stats(self, user_id: Optional[str] = None, language: Optional[str] = None) -> Dict:
+        """Get statistics about stored memories. Pass user_id and optional language to scope."""
+        memories = self.db.get_all_memories(language=language, user_id=user_id)
         
         stats = {
             'total_memories': len(memories),

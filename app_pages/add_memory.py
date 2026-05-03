@@ -2,7 +2,8 @@
 Add Memory page for Dementia Chatbot (custom router version)
 """
 import streamlit as st
-from config import SessionKeys, SUPPORTED_LANGUAGES
+from config import SessionKeys, SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE
+from i18n import t
 
 
 def _short_text(text: str, limit: int = 140) -> str:
@@ -14,11 +15,10 @@ def _short_text(text: str, limit: int = 140) -> str:
 
 def render_add_memory_page():
     """Render the add memory page"""
-    st.markdown("### 🧩 Add New Memory")
-    
     components = st.session_state.get('components', {})
+    language = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
     if not components:
-        st.error("System components not initialized")
+        st.error(t(language, "common.system_not_init"))
         return
     
     memory_system = components['memory_system']
@@ -27,20 +27,18 @@ def render_add_memory_page():
     db = components['db']
     
     user_role = st.session_state.get(SessionKeys.USER_ROLE, "user")
-    language = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, "en")
     username = st.session_state.get(SessionKeys.USERNAME, "")
     
-    # Input method selection
-    st.markdown("#### Choose how you'd like to add a memory")
-    tab_voice, tab_text = st.tabs(["🎙️ Voice Memory", "✏️ Text Memory"])
+    st.markdown(t(language, "add.title"))
+    st.markdown(t(language, "add.subtitle"))
+    tab_voice, tab_text = st.tabs([t(language, "add.tab_voice"), t(language, "add.tab_text")])
     with tab_voice:
         render_mic_record(memory_system, audio_processor, entity_extractor, db, language, username)
     with tab_text:
         render_text_input(memory_system, entity_extractor, db, language, username)
     
-    # Show recent memories
     st.markdown("---")
-    st.markdown("### 📚 Recent Memories")
+    st.markdown(t(language, "add.recent"))
     
     try:
         uid = st.session_state.get(SessionKeys.USER_ID)
@@ -49,7 +47,7 @@ def render_add_memory_page():
         )
         
         if recent_memories:
-            search_term = st.text_input("Search recent memories", placeholder="Type keyword like appointment, medicine, Sunday...")
+            search_term = st.text_input(t(language, "add.search"), placeholder="…")
             filtered_memories = recent_memories
             if search_term and search_term.strip():
                 s = search_term.lower().strip()
@@ -88,7 +86,13 @@ def render_add_memory_page():
 
                 st.markdown("---")
         else:
-            st.info("No memories yet. Add your first memory above!")
+            st.info(
+                t(
+                    language,
+                    "add.empty_for_language",
+                    lang=SUPPORTED_LANGUAGES.get(language, language),
+                )
+            )
     
     except Exception as e:
         st.error(f"Error loading memories: {e}")
@@ -112,7 +116,7 @@ def render_voice_input(memory_system, audio_processor, entity_extractor, db, lan
         if st.button("🔍 Process Recording", type="primary", key="process_uploaded"):
             with st.spinner("Processing audio..."):
                 try:
-                    transcribed_text = audio_processor.process_streamlit_audio(audio_bytes)
+                    transcribed_text = audio_processor.process_streamlit_audio(audio_bytes, language)
                     if transcribed_text:
                         st.session_state.uploaded_transcription = transcribed_text
                         entities = entity_extractor.extract_entities(transcribed_text)
@@ -163,7 +167,7 @@ def render_mic_record(memory_system, audio_processor, entity_extractor, db, lang
             if st.button("🔍 Process Recording", type="primary", key="process_recording"):
                 with st.spinner("Processing audio..."):
                     try:
-                        transcribed_text = audio_processor.process_streamlit_audio(audio_bytes)
+                        transcribed_text = audio_processor.process_streamlit_audio(audio_bytes, language)
                         if transcribed_text and len(transcribed_text.strip()) > 0:
                             st.session_state.processed_transcription = transcribed_text
                             entities = entity_extractor.extract_entities(transcribed_text)

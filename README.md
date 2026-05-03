@@ -139,6 +139,31 @@ CREATE TABLE memories (
 );
 ```
 
+### How to Check the Table Contents
+```bash
+sqlite3 data/memories.db
+```
+
+Tables
+```bash
+.tables
+```
+
+Schema
+```bash
+.schema
+```
+
+
+Queries:
+```bash
+SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;
+SELECT COUNT(*) FROM memories;
+SELECT id, user_id, source, language, created_at FROM memories LIMIT 10;
+SELECT id, username, role FROM users;
+```
+
+
 ### Security Features
 
 - **Fernet Encryption**: All memories encrypted at rest

@@ -9,16 +9,18 @@ import sqlite3
 from datetime import datetime, timedelta
 from config import SessionKeys, SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE
 from auth_service import AuthService
+from i18n import t
 
 
 def render_settings_page():
     """Render the settings page"""
-    st.markdown("### ⚙️ Settings")
-    
     components = st.session_state.get('components', {})
+    lang = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
     if not components:
-        st.error("System components not initialized")
+        st.error(t(lang, "common.system_not_init"))
         return
+    
+    st.markdown(t(lang, "settings.title"))
     
     db = components['db']
     memory_system = components['memory_system']
@@ -26,7 +28,12 @@ def render_settings_page():
     user_role = st.session_state.get(SessionKeys.USER_ROLE, "user")
     username = st.session_state.get(SessionKeys.USERNAME, "")
     
-    tab1, tab2, tab3, tab4 = st.tabs(["🌐 Language & Voice", "🔒 Security", "💾 Data Management", "🔧 System"])
+    tab1, tab2, tab3, tab4 = st.tabs([
+        t(lang, "settings.tab_lang"),
+        t(lang, "settings.tab_security"),
+        t(lang, "settings.tab_data"),
+        t(lang, "settings.tab_system"),
+    ])
     
     with tab1:
         render_language_settings()
@@ -39,40 +46,41 @@ def render_settings_page():
 
 
 def render_language_settings():
-    st.markdown("#### 🌐 Language & Voice Settings")
+    lang = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
+    st.markdown(t(lang, "settings.lang_heading"))
     current_language = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
     language_options = {code: name for code, name in SUPPORTED_LANGUAGES.items()}
     selected_language = st.selectbox(
-        "Select your preferred language:",
+        t(lang, "settings.lang_select"),
         options=list(language_options.keys()),
         format_func=lambda x: language_options[x],
         index=list(language_options.keys()).index(current_language)
     )
-    if st.button("✅ Submit Language Change", key="settings_submit_language") and selected_language != current_language:
+    if st.button(t(lang, "settings.lang_submit"), key="settings_submit_language") and selected_language != current_language:
         st.session_state[SessionKeys.SELECTED_LANGUAGE] = selected_language
-        st.success(f"Language changed to {language_options[selected_language]}")
+        st.success(t(selected_language, "settings.lang_success", name=language_options[selected_language]))
         st.rerun()
     
-    st.markdown("#### 🎤 Voice Settings")
+    st.markdown(t(lang, "settings.voice_heading"))
     components = st.session_state.get('components', {})
     audio_processor = components.get('audio_processor')
     if audio_processor:
         test_text = st.text_input(
-            "Test text for voice output:",
+            t(lang, "settings.voice_test_label"),
             value="Hello, this is a test of the voice system."
         )
-        if st.button("🔊 Test Voice"):
+        if st.button(t(lang, "settings.voice_test_btn")):
             try:
                 audio_data = audio_processor.text_to_speech(test_text, selected_language)
                 if audio_data:
                     st.audio(audio_data, format="audio/wav")
-                    st.success("Voice test successful!")
+                    st.success(t(lang, "settings.voice_ok"))
                 else:
-                    st.error("Voice test failed")
+                    st.error(t(lang, "settings.voice_fail"))
             except Exception as e:
                 st.error(f"Voice test error: {e}")
     else:
-        st.warning("Audio processor not available")
+        st.warning(t(lang, "settings.voice_unavailable"))
 
 
 def render_security_settings(user_role):
@@ -94,36 +102,45 @@ def render_security_settings(user_role):
         st.info("🔒 Security settings are managed by your caregiver")
 
 
-def _stats_for_user_memories(db, user_id: str) -> dict:
-    """Per-user memory counts for the Data Management tab (avoids older MemorySystem APIs)."""
-    memories = db.get_all_memories(user_id=user_id) if user_id else []
+def _stats_for_user_memories(db, user_id: str, scope_language: str) -> dict:
+    """Counts for the current user in the selected interface language (per-language storage)."""
+    memories = (
+        db.get_all_memories(language=scope_language, user_id=user_id) if user_id else []
+    )
     languages = {}
     for memory in memories:
-        lang = memory["language"]
-        languages[lang] = languages.get(lang, 0) + 1
+        lkey = memory["language"] or "en"
+        languages[lkey] = languages.get(lkey, 0) + 1
     return {"total_memories": len(memories), "languages": languages}
 
 
 def render_data_management(memory_system, db, user_role):
-    st.markdown("#### 💾 Data Management")
+    lang = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
+    st.markdown(t(lang, "settings.data_title"))
     user_id = st.session_state.get(SessionKeys.USER_ID)
     try:
-        stats = _stats_for_user_memories(db, user_id)
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Memories", stats['total_memories'])
-        if stats['languages']:
-            st.markdown("##### Memories by Language:")
-            for lang, count in stats['languages'].items():
-                lang_name = SUPPORTED_LANGUAGES.get(lang, lang)
-                st.write(f"• {lang_name}: {count} memories")
+        stats = _stats_for_user_memories(db, user_id, lang)
+        st.metric(t(lang, "home.metric_total"), stats["total_memories"])
+        st.caption(
+            t(
+                lang,
+                "settings.data_language_scope",
+                lang_name=SUPPORTED_LANGUAGES.get(lang, lang),
+            )
+        )
+        if stats["languages"]:
+            st.markdown(t(lang, "settings.memories_by_language"))
+            for lcode, count in stats["languages"].items():
+                lname = SUPPORTED_LANGUAGES.get(lcode, lcode)
+                st.write(f"• {lname}: {count}")
     except Exception as e:
         st.error(f"Error loading statistics: {e}")
     
-    # Show memories table
-    st.markdown("##### 📋 Your Memories")
+    st.markdown(t(lang, "settings.data_memories"))
     try:
-        memories = db.get_all_memories(user_id=user_id) if user_id else []
+        memories = (
+            db.get_all_memories(language=lang, user_id=user_id) if user_id else []
+        )
         if memories:
             # Create a summary table
             summary_data = []
@@ -137,29 +154,42 @@ def render_data_management(memory_system, db, user_role):
                 })
             
             st.table(summary_data)
-            st.caption(f"Showing {len(memories)} memories")
+            st.caption(
+                t(
+                    lang,
+                    "settings.data_table_caption",
+                    n=len(memories),
+                    lang_name=SUPPORTED_LANGUAGES.get(lang, lang),
+                )
+            )
         else:
-            st.info("No memories found.")
+            st.info(
+                t(
+                    lang,
+                    "settings.data_no_memories_scoped",
+                    lang_name=SUPPORTED_LANGUAGES.get(lang, lang),
+                )
+            )
     except Exception as e:
         st.error(f"Error loading memories: {e}")
     
-    st.markdown("##### Data Export")
+    st.markdown(t(lang, "settings.data_export"))
     col1, col2 = st.columns(2)
     with col1:
         if st.button("📊 Download as CSV", use_container_width=True):
-            export_memories_csv(db, user_id=user_id)
+            export_memories_csv(db, user_id=user_id, language=lang)
     with col2:
         if user_role == "caregiver":
             if st.button("📤 Export JSON", use_container_width=True):
-                export_memories(memory_system, db, user_id=user_id)
+                export_memories(memory_system, db, user_id=user_id, language=lang)
     
     if user_role == "caregiver":
-        st.markdown("##### Data Import")
+        st.markdown(t(lang, "settings.data_import"))
         uploaded_file = st.file_uploader("📥 Import Memories", type=['json'])
         if uploaded_file:
             import_memories(uploaded_file, memory_system, db)
     
-    st.markdown("##### Clear Data")
+    st.markdown(t(lang, "settings.data_clear"))
     
     if "clear_confirmed" not in st.session_state:
         st.session_state["clear_confirmed"] = False
@@ -167,35 +197,35 @@ def render_data_management(memory_system, db, user_role):
     # After a successful clear: only show success + OK (no clear / password UI)
     if st.session_state.get("memories_cleared_success"):
         st.success(st.session_state["memories_cleared_success"])
-        if st.button("OK", type="primary", key="dismiss_memories_cleared"):
+        if st.button(t(lang, "settings.clear_ok"), type="primary", key="dismiss_memories_cleared"):
             del st.session_state["memories_cleared_success"]
             st.rerun()
     else:
         if not st.session_state["clear_confirmed"]:
-            if st.button("🗑️ Clear All Memories", type="secondary", key="start_clear_memories"):
+            if st.button(t(lang, "settings.clear_btn"), type="secondary", key="start_clear_memories"):
                 st.session_state["clear_confirmed"] = True
                 st.rerun()
 
         if st.session_state["clear_confirmed"]:
-            st.warning("⚠️ This will permanently delete all memories for **your** account.")
+            st.warning(t(lang, "settings.clear_warn"))
             auth = AuthService(db)
             user_id = st.session_state.get(SessionKeys.USER_ID)
             username = st.session_state.get(SessionKeys.USERNAME, "")
-            reauth_password = st.text_input("Re-enter your password", type="password", key="clear_reauth_password")
-            confirmed = st.checkbox("I understand this will delete all memories permanently", key="clear_understand_check")
+            reauth_password = st.text_input(t(lang, "settings.clear_password"), type="password", key="clear_reauth_password")
+            confirmed = st.checkbox(t(lang, "settings.clear_check"), key="clear_understand_check")
 
             if confirmed:
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("✅ Confirm Delete", type="primary", key="confirm_clear_memories"):
+                    if st.button(t(lang, "settings.clear_confirm"), type="primary", key="confirm_clear_memories"):
                         user = db.get_user_by_username(username)
                         password_ok = bool(user and auth.verify_password(reauth_password, user["password_hash"]))
                         if password_ok and user_id:
                             clear_all_memories(memory_system, db, user_id)
                         else:
-                            st.error("Incorrect password or not signed in.")
+                            st.error(t(lang, "settings.clear_bad_password"))
                 with col2:
-                    if st.button("❌ Cancel", type="secondary", key="cancel_clear_memories"):
+                    if st.button(t(lang, "settings.clear_cancel"), type="secondary", key="cancel_clear_memories"):
                         st.session_state["clear_confirmed"] = False
                         st.rerun()
 
@@ -226,6 +256,7 @@ def render_data_management(memory_system, db, user_role):
 def render_system_settings(components):
     st.markdown("#### 🔧 System Settings")
     st.markdown("##### System Status")
+    slang = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
     col1, col2, col3 = st.columns(3)
     with col1:
         try:
@@ -243,38 +274,67 @@ def render_system_settings(components):
         try:
             uid = st.session_state.get(SessionKeys.USER_ID)
             if uid:
-                _ = components['db'].get_all_memories(user_id=uid)
+                _ = components['db'].get_all_memories(language=slang, user_id=uid)
             st.success("🟢 Database Ready")
         except:
             st.error("🔴 Database Error")
 
 
-def export_memories(memory_system, db, user_id: str = None):
+def export_memories(memory_system, db, user_id: str = None, language: str = None):
     try:
-        memories = db.get_all_memories(user_id=user_id) if user_id else []
+        lang = language or st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
+        memories = (
+            db.get_all_memories(language=lang, user_id=user_id) if user_id else []
+        )
+        if not memories:
+            st.warning(
+                t(
+                    lang,
+                    "settings.data_no_memories_scoped",
+                    lang_name=SUPPORTED_LANGUAGES.get(lang, lang),
+                )
+            )
+            return
         export_data = {
             'total_memories': len(memories),
             'memories': memories
         }
         json_data = json.dumps(export_data, indent=2)
+        uname = st.session_state.get(SessionKeys.USERNAME, 'user')
         st.download_button(
             label="📥 Download Memories",
             data=json_data,
-            file_name=f"memories_export_{st.session_state.get(SessionKeys.USERNAME, 'user')}.json",
+            file_name=f"memories_export_{uname}_{lang}.json",
             mime="application/json"
         )
-        st.success(f"Export ready! {len(memories)} memories prepared for download.")
+        st.success(
+            t(
+                lang,
+                "settings.export_json_ready",
+                n=len(memories),
+                lang_name=SUPPORTED_LANGUAGES.get(lang, lang),
+            )
+        )
     except Exception as e:
         st.error(f"Error exporting memories: {e}")
 
 
-def export_memories_csv(db, user_id: str = None):
+def export_memories_csv(db, user_id: str = None, language: str = None):
     """Export memories as a structured CSV file"""
     try:
-        memories = db.get_all_memories(user_id=user_id) if user_id else []
+        lang = language or st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
+        memories = (
+            db.get_all_memories(language=lang, user_id=user_id) if user_id else []
+        )
         
         if not memories:
-            st.warning("No memories found to export.")
+            st.warning(
+                t(
+                    lang,
+                    "settings.data_no_memories_scoped",
+                    lang_name=SUPPORTED_LANGUAGES.get(lang, lang),
+                )
+            )
             return
         
         # Create CSV content
@@ -321,7 +381,7 @@ def export_memories_csv(db, user_id: str = None):
         # Generate filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         username = st.session_state.get(SessionKeys.USERNAME, 'user')
-        filename = f"memories_{username}_{timestamp}.csv"
+        filename = f"memories_{username}_{lang}_{timestamp}.csv"
         
         # Create download button
         st.download_button(
@@ -332,7 +392,14 @@ def export_memories_csv(db, user_id: str = None):
             key="csv_download"
         )
         
-        st.success(f"CSV export ready! {len(memories)} memories prepared for download.")
+        st.success(
+            t(
+                lang,
+                "settings.export_csv_ready",
+                n=len(memories),
+                lang_name=SUPPORTED_LANGUAGES.get(lang, lang),
+            )
+        )
         
         # Show preview
         st.markdown("#### 📋 Preview of Exported Data:")
@@ -401,9 +468,8 @@ def clear_all_memories(memory_system, db, user_id: str):
                 conn.commit()
                 n = cur.rowcount
         memory_system.rebuild_index()
-        st.session_state["memories_cleared_success"] = (
-            f"Successfully deleted {n} memory record(s) for your account. Your memory list is now empty."
-        )
+        lg = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
+        st.session_state["memories_cleared_success"] = t(lg, "settings.clear_success", n=n)
         st.session_state["clear_confirmed"] = False
         st.rerun()
     except Exception as e:

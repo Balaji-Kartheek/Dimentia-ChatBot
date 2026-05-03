@@ -19,6 +19,7 @@ except Exception:
     PdfReader = None
 
 from config import SessionKeys, SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE
+from i18n import t
 
 
 def _short_text(text: str, limit: int = 220) -> str:
@@ -133,32 +134,39 @@ def _read_memories_upload(file) -> List[str]:
 
 
 def render_support_page():
-    st.markdown("### 🆘 Support")
-    st.caption("Upload your information and ask questions. We’ll use the uploaded content to help.")
+    lang_ui = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
+    st.markdown(t(lang_ui, "support.title"))
+    st.caption(t(lang_ui, "support.caption"))
 
     components = st.session_state.get('components', {})
     if not components:
-        st.error("System components not initialized")
+        st.error(t(lang_ui, "common.system_not_init"))
         return
 
     llm_integration = components['llm_integration']
     db = components['db']
     username = st.session_state.get(SessionKeys.USERNAME, "")
 
-    # Language selection (applies only to Support flows)
-    st.markdown("#### Language")
-    current_support_lang = st.session_state.get("support_language", st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE))
+    st.markdown(t(lang_ui, "support.lang"))
+    current_support_lang = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
+    keys = list(SUPPORTED_LANGUAGES.keys())
+    idx = keys.index(current_support_lang) if current_support_lang in keys else 0
     selected_support_lang = st.selectbox(
-        "Preferred language",
-        options=list(SUPPORTED_LANGUAGES.keys()),
+        t(lang_ui, "support.lang_preferred"),
+        options=keys,
         format_func=lambda x: SUPPORTED_LANGUAGES[x],
-        index=list(SUPPORTED_LANGUAGES.keys()).index(current_support_lang)
+        index=idx,
+        key="support_lang_selectbox",
     )
-    if st.button("✅ Submit Language", key="support_submit_language"):
+    if st.button(t(lang_ui, "support.lang_submit"), key="support_submit_language"):
+        st.session_state[SessionKeys.SELECTED_LANGUAGE] = selected_support_lang
         st.session_state["support_language"] = selected_support_lang
-        st.success(f"Language set to {SUPPORTED_LANGUAGES[selected_support_lang]}")
+        st.success(
+            t(selected_support_lang, "support.lang_ok", name=SUPPORTED_LANGUAGES[selected_support_lang])
+        )
+        st.rerun()
 
-    lang_code = st.session_state.get("support_language", current_support_lang)
+    lang_code = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
 
     st.markdown("#### Add information")
     col_mem, col_pdf = st.columns(2)
@@ -178,8 +186,8 @@ def render_support_page():
                 texts.append(_read_pdf(f))
             # Chunk
             chunks: List[str] = []
-            for t in texts:
-                chunks.extend(_chunk_text(t))
+            for txt in texts:
+                chunks.extend(_chunk_text(txt))
             # Build index
             if chunks:
                 st.session_state["support_index"] = _build_index(chunks, lang_code)
