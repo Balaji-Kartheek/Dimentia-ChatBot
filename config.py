@@ -64,6 +64,11 @@ TOP_K_RESULTS = 5
 
 # Feature flags and local-first runtime options
 FEATURE_FACE_AUTH = os.getenv("FEATURE_FACE_AUTH", "1") == "1"
+FACE_AUTH_ENGINE = (os.getenv("FACE_AUTH_ENGINE", "auto") or "auto").strip().lower()
+# For cv2 fallback (cosine score in [0,1]); lower = easier match.
+FACE_AUTH_MATCH_THRESHOLD = float(os.getenv("FACE_AUTH_MATCH_THRESHOLD", "0.82"))
+# For face_recognition engine (face_distance; lower is better). Typical 0.45-0.60.
+FACE_AUTH_DISTANCE_THRESHOLD = float(os.getenv("FACE_AUTH_DISTANCE_THRESHOLD", "0.55"))
 FEATURE_ALERTS = os.getenv("FEATURE_ALERTS", "1") == "1"
 FEATURE_DECAY_RANK = os.getenv("FEATURE_DECAY_RANK", "1") == "1"
 FEATURE_ADAPTIVE_MODE = os.getenv("FEATURE_ADAPTIVE_MODE", "1") == "1"

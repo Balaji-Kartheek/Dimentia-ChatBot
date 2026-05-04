@@ -173,3 +173,10 @@ python3 twilio_whatsapp_test.py twoway +919876543210
 - Memory text/tags are encrypted at rest.
 - Data is stored locally in SQLite by default.
 - You can export data from Settings for backup.
+
+
+### How to see the DB 
+
+1. sqlite3 data/memories.db 
+2. .tables
+3. select * FROM users;
