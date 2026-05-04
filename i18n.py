@@ -21,7 +21,6 @@ _EN: dict[str, str] = {
     "nav.ask_assistant": "🔍 Ask Assistant",
     "nav.support": "🆘 Support",
     "nav.settings": "⚙️ Settings",
-    "nav.caregiver": "👥 Caregiver Console",
     "login.lang_label": "Interface language",
     "login.title": "🧠 Dementia Chatbot",
     "login.subtitle": "Personal Memory Assistant with Multilingual Voice Support",
@@ -138,7 +137,6 @@ _EN: dict[str, str] = {
     "common.page_not_found": "Page not found",
     "common.error_page": "Error rendering page: {err}",
     "welcome.user": "Your personal memory assistant is ready to help you recall important information.",
-    "welcome.caregiver": "Caregiver tools are ready. You can review and help manage memories here.",
     "day_summary.prefix": "Good morning. A quick recap:",
     "day_summary.card_title": "Day start summary",
     "day_summary.heading_greeting": "Good morning",
@@ -164,7 +162,6 @@ _HI_OVERRIDES = {
     "nav.ask_assistant": "🔍 सहायक से पूछें",
     "nav.support": "🆘 सहायता",
     "nav.settings": "⚙️ सेटिंग्स",
-    "nav.caregiver": "👥 देखभाल कंसोल",
     "login.lang_label": "इंटरफ़ेस भाषा",
     "login.title": "🧠 डिमेंशिया चैटबॉट",
     "login.subtitle": "बहुभाषी आवाज़ के साथ व्यक्तिगत स्मृति सहायक",
@@ -274,7 +271,6 @@ _HI_OVERRIDES = {
     "support.lang_ok": "भाषा सेट: {name} (पूरे ऐप पर लागू)",
     "common.system_not_init": "सिस्टम तैयार नहीं है",
     "welcome.user": "आपका व्यक्तिगत स्मृति सहायक महत्वपूर्ण जानकारी याद दिलाने के लिए तैयार है।",
-    "welcome.caregiver": "देखभाल उपकरण तैयार हैं। आप यहाँ यादें समीक्षा कर सकते हैं।",
     "day_summary.prefix": "सुप्रभात। संक्षिप्त स्मरण:",
     "day_summary.card_title": "दिन की शुरुआत — संक्षेप",
     "day_summary.heading_greeting": "सुप्रभात",
@@ -300,7 +296,6 @@ _TA_OVERRIDES = {
     "nav.ask_assistant": "🔍 உதவியாளர்",
     "nav.support": "🆘 ஆதரவு",
     "nav.settings": "⚙️ அமைப்புகள்",
-    "nav.caregiver": "👥 பராமரிப்பாளர் கன்சோல்",
     "login.lang_label": "இடைமுக மொழி",
     "login.title": "🧠 டிமென்ஷியா சாட்பாட்",
     "login.subtitle": "பல மொழி குரலுடன் தனிப்பட்ட நினைவக உதவியாளர்",
@@ -410,7 +405,6 @@ _TA_OVERRIDES = {
     "support.lang_ok": "மொழி: {name} (முழு செயலிக்கும்)",
     "common.system_not_init": "கூறுகள் ஆரம்பிக்கப்படவில்லை",
     "welcome.user": "உங்கள் தனிப்பட்ட நினைவக உதவியாளர் முக்கிய தகவல்களை நினைவூட்ட தயார்.",
-    "welcome.caregiver": "பராமரிப்பாளர் கருவிகள் தயார். நினைவுகளை இங்கு மதிப்பிடலாம்.",
     "day_summary.prefix": "காலை வணக்கம். சுருக்கம்:",
     "day_summary.card_title": "நாள் தொடக்கச் சுருக்கம்",
     "day_summary.heading_greeting": "காலை வணக்கம்",
@@ -446,6 +440,5 @@ def t(ui_lang: str, key: str, **kwargs) -> str:
     return text
 
 
-def welcome_body(user_role: str, lang: str) -> str:
-    role = "caregiver" if user_role == "caregiver" else "user"
-    return t(lang, f"welcome.{role}")
+def welcome_body(lang: str) -> str:
+    return t(lang, "welcome.user")

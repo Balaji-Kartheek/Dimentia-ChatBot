@@ -38,7 +38,6 @@ def render_ask_assistant_page():
 
         maybe_create_inactivity_alert(db, _uid)
     
-    user_role = st.session_state.get(SessionKeys.USER_ROLE, "user")
     username = st.session_state.get(SessionKeys.USERNAME, "")
     
     st.markdown(t(language, "ask.subtitle"))

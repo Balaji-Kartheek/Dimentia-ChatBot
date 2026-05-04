@@ -32,8 +32,6 @@ SECRET_KEY_FILE = DATA_DIR / "secret.key"
 # Default user credentials (for MVP)
 DEFAULT_USERNAME = "user"
 DEFAULT_PASSWORD = "user"
-CAREGIVER_USERNAME = "caregiver"
-CAREGIVER_PASSWORD = "caregiver123"
 
 # Language settings
 SUPPORTED_LANGUAGES = {
@@ -123,7 +121,7 @@ FERNET_CIPHER = get_fernet_cipher()
 class SessionKeys:
     USER_LOGGED_IN = "user_logged_in"
     USERNAME = "username"
-    USER_ROLE = "user_role"  # "user" or "caregiver"
+    USER_ROLE = "user_role"  # stored per account; UI is single-role ("user")
     SELECTED_LANGUAGE = "selected_language"
     MEMORY_APPROVED = "memory_approved"
     AUDIO_RECORDED = "audio_recorded"

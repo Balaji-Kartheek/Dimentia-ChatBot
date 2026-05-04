@@ -32,7 +32,6 @@ def render_add_memory_page():
 
         maybe_create_inactivity_alert(db, _puid)
     
-    user_role = st.session_state.get(SessionKeys.USER_ROLE, "user")
     username = st.session_state.get(SessionKeys.USERNAME, "")
     
     st.markdown(t(language, "add.title"))
@@ -75,22 +74,21 @@ def render_add_memory_page():
                 if memory['tags']:
                     st.caption("Tags: " + ", ".join(memory['tags'][:6]))
 
-                if user_role == "caregiver":
-                    col_verify, col_delete = st.columns(2)
-                    with col_verify:
-                        if st.button("✅ Verify", key=f"verify_{memory['id']}", use_container_width=True):
-                            memory_system.db.update_memory_caregiver_confirmed(memory['id'], True)
-                            uid = st.session_state.get(SessionKeys.USER_ID)
-                            db.log_activity(uid or username, "verified_memory", memory['id'])
-                            st.success("Memory verified!")
-                            st.rerun()
-                    with col_delete:
-                        if st.button("🗑️ Delete", key=f"delete_{memory['id']}", use_container_width=True):
-                            memory_system.delete_memory(memory['id'])
-                            uid = st.session_state.get(SessionKeys.USER_ID)
-                            db.log_activity(uid or username, "deleted_memory", memory['id'])
-                            st.success("Memory deleted!")
-                            st.rerun()
+                col_verify, col_delete = st.columns(2)
+                with col_verify:
+                    if st.button("✅ Verify", key=f"verify_{memory['id']}", use_container_width=True):
+                        memory_system.db.update_memory_caregiver_confirmed(memory['id'], True)
+                        uid = st.session_state.get(SessionKeys.USER_ID)
+                        db.log_activity(uid or username, "verified_memory", memory['id'])
+                        st.success("Memory verified!")
+                        st.rerun()
+                with col_delete:
+                    if st.button("🗑️ Delete", key=f"delete_{memory['id']}", use_container_width=True):
+                        memory_system.delete_memory(memory['id'])
+                        uid = st.session_state.get(SessionKeys.USER_ID)
+                        db.log_activity(uid or username, "deleted_memory", memory['id'])
+                        st.success("Memory deleted!")
+                        st.rerun()
 
                 st.markdown("---")
         else:

@@ -53,9 +53,6 @@ def render_settings_page():
     db = components['db']
     memory_system = components['memory_system']
     
-    user_role = st.session_state.get(SessionKeys.USER_ROLE, "user")
-    username = st.session_state.get(SessionKeys.USERNAME, "")
-    
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         t(lang, "settings.tab_lang"),
         t(lang, "settings.tab_security"),
@@ -67,9 +64,9 @@ def render_settings_page():
     with tab1:
         render_language_settings()
     with tab2:
-        render_security_settings(user_role)
+        render_security_settings()
     with tab3:
-        render_data_management(memory_system, db, user_role)
+        render_data_management(memory_system, db)
     with tab4:
         render_trusted_and_safety(db)
     with tab5:
@@ -114,23 +111,20 @@ def render_language_settings():
         st.warning(t(lang, "settings.voice_unavailable"))
 
 
-def render_security_settings(user_role):
+def render_security_settings():
     st.markdown("#### 🔒 Security Settings")
-    if user_role == "caregiver":
-        st.markdown("##### Change Password")
-        current_password = st.text_input("Current Password", type="password")
-        new_password = st.text_input("New Password", type="password")
-        confirm_password = st.text_input("Confirm New Password", type="password")
-        if st.button("Change Password", key="change_password_btn"):
-            if new_password == confirm_password and len(new_password) >= 6:
-                st.success("Password changed successfully!")
-            else:
-                st.error("Passwords don't match or are too short")
-        st.markdown("##### Encryption Status")
-        st.success("✅ All memories are encrypted using Fernet encryption")
-        st.info("🔐 Your data is stored securely on your local device")
-    else:
-        st.info("🔒 Security settings are managed by your caregiver")
+    st.markdown("##### Change Password")
+    current_password = st.text_input("Current Password", type="password")
+    new_password = st.text_input("New Password", type="password")
+    confirm_password = st.text_input("Confirm New Password", type="password")
+    if st.button("Change Password", key="change_password_btn"):
+        if new_password == confirm_password and len(new_password) >= 6:
+            st.success("Password changed successfully!")
+        else:
+            st.error("Passwords don't match or are too short")
+    st.markdown("##### Encryption Status")
+    st.success("✅ All memories are encrypted using Fernet encryption")
+    st.info("🔐 Your data is stored securely on your local device")
 
 
 def _stats_for_user_memories(db, user_id: str, scope_language: str) -> dict:
@@ -145,7 +139,7 @@ def _stats_for_user_memories(db, user_id: str, scope_language: str) -> dict:
     return {"total_memories": len(memories), "languages": languages}
 
 
-def render_data_management(memory_system, db, user_role):
+def render_data_management(memory_system, db):
     lang = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
     st.markdown(t(lang, "settings.data_title"))
     user_id = st.session_state.get(SessionKeys.USER_ID)
@@ -210,15 +204,13 @@ def render_data_management(memory_system, db, user_role):
         if st.button("📊 Download as CSV", use_container_width=True):
             export_memories_csv(db, user_id=user_id, language=lang)
     with col2:
-        if user_role == "caregiver":
-            if st.button("📤 Export JSON", use_container_width=True):
-                export_memories(memory_system, db, user_id=user_id, language=lang)
-    
-    if user_role == "caregiver":
-        st.markdown(t(lang, "settings.data_import"))
-        uploaded_file = st.file_uploader("📥 Import Memories", type=['json'])
-        if uploaded_file:
-            import_memories(uploaded_file, memory_system, db)
+        if st.button("📤 Export JSON", use_container_width=True):
+            export_memories(memory_system, db, user_id=user_id, language=lang)
+
+    st.markdown(t(lang, "settings.data_import"))
+    uploaded_file = st.file_uploader("📥 Import Memories", type=['json'])
+    if uploaded_file:
+        import_memories(uploaded_file, memory_system, db)
     
     st.markdown(t(lang, "settings.data_clear"))
     

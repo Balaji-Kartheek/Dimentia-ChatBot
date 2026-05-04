@@ -80,7 +80,6 @@ def render_login_page():
                 st.rerun()
 
     with tab_register:
-        role = st.selectbox(t(ui, "register.role"), ["user", "caregiver"], key="reg_role")
         full_name = st.text_input(t(ui, "register.full_name"), key="reg_full_name")
         new_username = st.text_input(t(ui, "register.new_username"), key="reg_username")
         new_password = st.text_input(t(ui, "register.new_password"), type="password", key="reg_password")
@@ -97,7 +96,7 @@ def render_login_page():
                 success, msg = auth.register_user(
                     username=new_username,
                     password=new_password,
-                    role=role,
+                    role="user",
                     full_name=full_name or new_username,
                     trusted_name=trusted_name,
                     trusted_contact=trusted_contact,
@@ -171,13 +170,12 @@ def render_home_page():
     
     # Get user info
     username = st.session_state.get(SessionKeys.USERNAME, "")
-    user_role = st.session_state.get(SessionKeys.USER_ROLE, "user")
     language = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
     
     st.markdown(
         f"""### {t(language, "home.welcome", name=username)}
 
-{welcome_body(user_role, language)}
+{welcome_body(language)}
 """
     )
 
@@ -468,7 +466,7 @@ def maybe_create_inactivity_alert(db, user_id: str):
     """
     If the last recorded activity is older than INACTIVITY_ALERT_DAYS, open one inactivity alert
     and WhatsApp the trusted contact (when Twilio is configured). Notification is evaluated when the
-    app home page loads (patient or caregiver session).
+    app home page loads (logged-in user session).
     """
     last_activity = db.get_last_activity(user_id)
     if not last_activity:

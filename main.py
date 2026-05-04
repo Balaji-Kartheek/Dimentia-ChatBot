@@ -14,7 +14,7 @@ from app_init import ensure_app_initialized
 from i18n import t
 
 # Page imports
-from app_pages import home, add_memory, ask_assistant, settings, caregiver_console
+from app_pages import home, add_memory, ask_assistant, settings
 try:
     from app_pages import support
 except Exception:
@@ -124,10 +124,6 @@ def render_sidebar():
             except Exception:
                 settings = None
             try:
-                caregiver_console = importlib.import_module('app_pages.caregiver_console')
-            except Exception:
-                caregiver_console = None
-            try:
                 support = importlib.import_module('app_pages.support')
             except Exception:
                 support = None
@@ -142,8 +138,6 @@ def render_sidebar():
                 pages[t(lang, "nav.support")] = "support"
             if settings:
                 pages[t(lang, "nav.settings")] = "settings"
-            if st.session_state.get(SessionKeys.USER_ROLE) == "caregiver" and caregiver_console:
-                pages[t(lang, "nav.caregiver")] = "caregiver_console"
 
             # Persist current selection
             current_page_value = st.session_state.get('nav_page', 'home')
@@ -227,8 +221,6 @@ def main():
             support.render_support_page()
         elif selected_page == "settings":
             settings.render_settings_page()
-        elif selected_page == "caregiver_console":
-            caregiver_console.render_caregiver_console()
         else:
             lg = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
             st.error(t(lg, "common.page_not_found"))
