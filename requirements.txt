@@ -38,3 +38,11 @@ python-dateutil==2.9.0.post0
 python-dotenv
 # uuid, datetime, json, base64, io, os, sys, pathlib, logging, typing are built into Python
 pypdf
+
+# Optional: trusted-contact WhatsApp via Twilio (install if using Twilio)
+twilio>=9.0.0
+flask>=3.0.0
+ngrok
+
+# Mac
+# brew install ngrok

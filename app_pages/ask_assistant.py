@@ -4,7 +4,8 @@ Ask Assistant page for Dementia Chatbot (custom router version)
 import streamlit as st
 from datetime import datetime
 import re
-from config import SessionKeys, SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE
+from config import SessionKeys, SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE, REPEATED_QUERY_ALERT_COOLDOWN_HOURS
+from alert_delivery import notify_trusted_for_alert
 from i18n import t
 
 
@@ -25,11 +26,17 @@ def render_ask_assistant_page():
         return
     
     st.markdown(t(language, "ask.title"))
-    
+
     memory_system = components['memory_system']
     audio_processor = components['audio_processor']
     llm_integration = components['llm_integration']
     db = components['db']
+
+    _uid = st.session_state.get(SessionKeys.USER_ID)
+    if _uid:
+        from app_pages.home import maybe_create_inactivity_alert
+
+        maybe_create_inactivity_alert(db, _uid)
     
     user_role = st.session_state.get(SessionKeys.USER_ROLE, "user")
     username = st.session_state.get(SessionKeys.USERNAME, "")
@@ -207,16 +214,54 @@ def generate_response(question, memory_system, llm_integration, db, language, us
         severity = 3 if repeat_count >= 5 else 2 if repeat_count >= 2 else 1
         if user_id:
             db.log_query_event(user_id=user_id, query_text=question, query_signature=query_signature, severity=severity)
-            if severity >= 3:
-                db.create_alert(
-                    user_id=user_id,
-                    alert_type="repeated_query",
-                    severity=severity,
-                    message=f"Repeated query detected: '{question[:80]}' ({repeat_count + 1} times in 24h).",
+            if severity >= 3 and not db.has_recent_alert(
+                user_id, "repeated_query", hours=REPEATED_QUERY_ALERT_COOLDOWN_HOURS
+            ):
+                recent_q_lines = [question] + [
+                    e.get("query_text") or "" for e in recent_events[:14]
+                ]
+                excerpts = [
+                    (m.get("text") or "")
+                    for m in (response_data.get("relevant_memories") or [])[:5]
+                ]
+                doctor_brief = llm_integration.summarize_for_doctor_visit(
+                    recent_q_lines, excerpts, language
                 )
-                response_data["caregiver_alert"] = "Trusted person alert created due to repeated confusion pattern."
+                db.save_doctor_report(
+                    user_id, datetime.now().date().isoformat(), doctor_brief
+                )
+                alert_msg = (
+                    f"Repeated similar questions ({repeat_count + 1} in 24h): '{question[:80]}'. "
+                    "Suggest scheduling a doctor check-up.\n\n--- Condition summary for clinician ---\n"
+                    f"{doctor_brief}"
+                )
+                aid = db.create_alert(user_id, "repeated_query", alert_msg, severity)
+                wa_ok, wa_err = notify_trusted_for_alert(
+                    db,
+                    user_id,
+                    aid,
+                    "repeated_query",
+                    alert_msg,
+                    severity,
+                    patient_question=question,
+                )
+                base_alert = (
+                    "Your trusted contact was notified (WhatsApp if Twilio is configured). "
+                    "A doctor-visit summary was saved under Settings."
+                )
+                if not wa_ok and wa_err and wa_err != "twilio_not_configured":
+                    response_data["caregiver_alert"] = f"{base_alert} WhatsApp error: {wa_err}"
+                else:
+                    response_data["caregiver_alert"] = base_alert
+            elif severity >= 3:
+                response_data["caregiver_alert"] = (
+                    "Repeated question pattern detected; a recent alert was already sent to your trusted contact."
+                )
 
-        db.log_activity(username, "asked_question", None, f"Question: {question[:100]}...")
+        if user_id:
+            db.log_activity(user_id, "asked_question", None, f"Question: {question[:100]}...")
+        elif username:
+            db.log_activity(username, "asked_question", None, f"Question: {question[:100]}...")
         
         conversation_entry = {
             'question': question,
@@ -234,9 +279,39 @@ def generate_response(question, memory_system, llm_integration, db, language, us
                 db.increment_memory_reinforcement(mid)
         
         st.session_state['conversation_history'].append(conversation_entry)
-        
+
+        if user_id and response_data.get("escalate_to_trusted"):
+            response_data["trusted_wa_skipped_cooldown"] = False
+            response_data["trusted_wa_retried_pending"] = False
+            detail = f"Person / memory lookup weak for: {question[:500]}"
+            unsent = db.get_open_unnotified_alert(user_id, "trusted_lookup")
+            if unsent:
+                response_data["trusted_wa_retried_pending"] = True
+                wa_ok, wa_err = notify_trusted_for_alert(
+                    db,
+                    user_id,
+                    unsent["id"],
+                    "trusted_lookup",
+                    unsent.get("message") or detail,
+                    int(unsent.get("severity") or 2),
+                    patient_question=question,
+                )
+                response_data["trusted_wa_sent"] = wa_ok
+                response_data["trusted_wa_error"] = None if wa_ok else wa_err
+            elif not db.has_recent_alert(user_id, "trusted_lookup", hours=8, status="open"):
+                aid = db.create_alert(user_id, "trusted_lookup", detail, 2)
+                wa_ok, wa_err = notify_trusted_for_alert(
+                    db, user_id, aid, "trusted_lookup", detail, 2, patient_question=question
+                )
+                response_data["trusted_wa_sent"] = wa_ok
+                response_data["trusted_wa_error"] = None if wa_ok else wa_err
+            else:
+                response_data["trusted_wa_sent"] = None
+                response_data["trusted_wa_error"] = None
+                response_data["trusted_wa_skipped_cooldown"] = True
+
         return response_data
-        
+
     except Exception as e:
         return {
             'response': f"I'm sorry, I encountered an error while processing your question: {str(e)}",
@@ -274,6 +349,41 @@ def display_response(response_data, question, language):
                         "source_modality": memory.get("source_modality", "text"),
                         "rank_score": memory.get("rank_score"),
                     })
+    if response_data.get("escalate_to_trusted"):
+        st.success(
+            "📤 **Trusted contact:** an alert was saved. If Twilio WhatsApp is configured, a message "
+            "is sent to the trusted number on file. Replies appear under **Settings → Trusted & safety** and are added to memories."
+        )
+        if response_data.get("trusted_wa_retried_pending"):
+            st.info(
+                "Found an open alert that **never had a successful WhatsApp delivery** (e.g. auth failed earlier). "
+                "The app **retried** sending to your trusted contact now."
+            )
+        if response_data.get("trusted_wa_skipped_cooldown"):
+            st.info(
+                "There is already a **recent** trusted_lookup alert and WhatsApp was already sent for it, "
+                "so no second message was sent. Open **Settings → Trusted & safety** and tap **Resolve** on the alert "
+                "to start a fresh notification cycle."
+            )
+        elif response_data.get("trusted_wa_sent") is True:
+            st.caption("Twilio accepted the WhatsApp message. If it did not arrive, check sandbox join and trial limits below.")
+        elif response_data.get("trusted_wa_sent") is False:
+            err = str(response_data.get("trusted_wa_error") or "unknown error")
+            st.error(f"WhatsApp was **not** sent: {err}")
+            if "twilio_not_configured" in err:
+                st.caption(
+                    "Set `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM` in `.env` and restart Streamlit."
+                )
+            elif "21608" in err or "21606" in err or "unverified" in err.lower():
+                st.caption(
+                    "**Twilio trial:** the destination number may need to be verified for some channels. "
+                    "For WhatsApp sandbox, the trusted number must **join** the sandbox (see Settings)."
+                )
+            elif "invalid_phone" in err or "contact_not_whatsapp_capable" in err:
+                st.caption(
+                    "Save the trusted contact as a mobile with country code, e.g. `+916302542392` or set "
+                    "`DEFAULT_SMS_COUNTRY_CODE=91` in `.env` for 10-digit India numbers."
+                )
     if response_data.get("caregiver_alert"):
         st.warning(response_data["caregiver_alert"])
     

@@ -12,7 +12,15 @@ import re
 from dateutil.parser import parse as parse_datetime
 from dateutil.relativedelta import relativedelta, MO, TU, WE, TH, FR, SA, SU
 
-from config import GEMINI_MODEL, GEMINI_API_KEY, FEATURE_ADAPTIVE_MODE, SUPPORTED_LANGUAGES
+from config import (
+    GEMINI_MODEL,
+    GEMINI_API_KEY,
+    FEATURE_ADAPTIVE_MODE,
+    SUPPORTED_LANGUAGES,
+    PERSON_QUERY_SIMILARITY_THRESHOLD,
+    PERSON_QUERY_VECTOR_MIN_SIMILARITY,
+    SIMILARITY_THRESHOLD,
+)
 from memory_system import MemorySystem
 
 logger = logging.getLogger(__name__)
@@ -59,6 +67,40 @@ class LLMIntegration:
                 relevant_memories = self.memory_system.search_memories(
                     query, k=5, language=None, user_id=user_id
                 )
+
+            person_q = self._is_person_identity_query(query, language)
+            best_score = (
+                float(relevant_memories[0].get("similarity_score", 0.0)) if relevant_memories else 0.0
+            )
+            # Vector hits are always >= SIMILARITY_THRESHOLD; comparing only to 0.42 never escalated.
+            person_memory_too_weak = not relevant_memories
+            if relevant_memories:
+                if best_score >= SIMILARITY_THRESHOLD - 1e-9:
+                    person_memory_too_weak = best_score < PERSON_QUERY_VECTOR_MIN_SIMILARITY
+                else:
+                    person_memory_too_weak = best_score < PERSON_QUERY_SIMILARITY_THRESHOLD
+            if person_q and person_memory_too_weak:
+                escalate_ui = {
+                    "en": (
+                        "I could not find a reliable match in your saved memories for this person. "
+                        "Your trusted contact has been alerted. When they reply by text, you can read it under Settings."
+                    ),
+                    "hi": (
+                        "इस व्यक्ति के लिए आपकी सुरक्षित यादों में विश्वसनीय जानकारी नहीं मिली। "
+                        "आपके विश्वसनीय संपर्क को सूचित किया गया है। उनके जवाब के लिए Settings देखें।"
+                    ),
+                    "ta": (
+                        "இந்த நபரைப் பற்றி உங்கள் நினைவகத்தில் நம்பகமான தகவல் கிடைக்கவில்லை. "
+                        "நம்பகமான தொடர்புக்கு அறிவிப்பு அனுப்பப்பட்டது. Settings-ல் பதிலைப் பார்க்கவும்."
+                    ),
+                }
+                return {
+                    "response": escalate_ui.get(language, escalate_ui["en"]),
+                    "relevant_memories": relevant_memories[:3] if relevant_memories else [],
+                    "context_used": "Person-identification query — memory match below threshold.",
+                    "timestamp": datetime.now().isoformat(),
+                    "escalate_to_trusted": True,
+                }
 
             if not relevant_memories:
                 no_memory_responses = {
@@ -142,6 +184,74 @@ class LLMIntegration:
             )
 
         return "\n\n".join(context_parts)
+
+    def _is_person_identity_query(self, query: str, language: str) -> bool:
+        q = (query or "").strip()
+        low = q.lower()
+        patterns = [
+            r"\bwho\s+is\b",
+            r"\bwho's\b",
+            r"\bwho\s+was\b",
+            r"\bwho\s+are\b",
+            r"\bdo\s+i\s+know\b",
+            r"\bdid\s+i\s+know\b",
+            r"\bdid\s+we\s+know\b",
+            r"\bhave\s+i\s+met\b",
+            r"\bhave\s+i\s+known\b",
+            r"\bwhat\s+is\s+.+\s'name\b",
+        ]
+        if any(re.search(p, low) for p in patterns):
+            return True
+        if language == "hi" and ("कौन है" in q or "कौन था" in q or "कौन हैं" in q):
+            return True
+        if language == "ta" and ("யார்" in q and ("அது" in q or "இவர்" in q or "அவர்" in q)):
+            return True
+        return False
+
+    def summarize_for_doctor_visit(
+        self,
+        recent_questions: List[str],
+        memory_excerpts: List[str],
+        language: str = "en",
+    ) -> str:
+        """Short clinician-oriented briefing from repeated questions + memory snippets."""
+        q_block = "\n".join(f"- {(t or '')[:220]}" for t in (recent_questions or [])[:12])
+        m_block = "\n".join(f"- {(x or '')[:240]}" for x in (memory_excerpts or [])[:6])
+        prompt = (
+            f"Language for output: {language}.\n"
+            "You assist clinicians. From ONLY the data below, write a brief neutral summary for a doctor visit: "
+            "observed repetition / confusion themes, relevant facts from memories, and suggested non-diagnostic follow-up. "
+            "Do not state a medical diagnosis. Use short bullets.\n\n"
+            f"Recent patient questions:\n{q_block or '(none)'}\n\n"
+            f"Memory excerpts:\n{m_block or '(none)'}\n"
+        )
+        try:
+            if not self.gemini_client:
+                self._initialize_gemini()
+            if not self.gemini_client:
+                return (q_block + "\n" + m_block).strip() or "No summary (LLM offline)."
+            for candidate_model in self.model_candidates:
+                try:
+                    response = self.gemini_client.models.generate_content(
+                        model=candidate_model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            temperature=0.15,
+                            top_p=0.9,
+                            max_output_tokens=500,
+                        ),
+                    )
+                    text = getattr(response, "text", "") or ""
+                    if text.strip():
+                        self.model = candidate_model
+                        return text.strip()
+                except Exception as model_error:
+                    logger.warning("Doctor summary model '%s' failed: %s", candidate_model, model_error)
+                    continue
+            return "Summary generation failed; see stored queries and memories."
+        except Exception as e:
+            logger.error("summarize_for_doctor_visit: %s", e)
+            return f"Summary error: {e}"
 
     def _create_no_upcoming_appointment_answer(self, query: str, memories: List[Dict], language: str) -> Optional[str]:
         if not self._query_suggests_appointment_timing(query, language):

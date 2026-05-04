@@ -126,7 +126,25 @@ class MemoryDatabase:
                     severity INTEGER DEFAULT 1,
                     message TEXT NOT NULL,
                     status TEXT DEFAULT 'open',
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    external_notify_at DATETIME
+                )
+            ''')
+            for migration in [
+                "ALTER TABLE alert_events ADD COLUMN external_notify_at DATETIME",
+            ]:
+                try:
+                    cursor.execute(migration)
+                except sqlite3.OperationalError:
+                    pass
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS trusted_inbound_messages (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    from_contact TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    is_read INTEGER DEFAULT 0
                 )
             ''')
             cursor.execute('''
@@ -525,14 +543,155 @@ class MemoryDatabase:
             )
             return [dict(r) for r in cursor.fetchall()]
 
-    def create_alert(self, user_id: str, alert_type: str, message: str, severity: int = 1):
+    def create_alert(self, user_id: str, alert_type: str, message: str, severity: int = 1) -> str:
+        alert_id = str(uuid.uuid4())
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT INTO alert_events (id, user_id, alert_type, severity, message) VALUES (?, ?, ?, ?, ?)",
-                (str(uuid.uuid4()), user_id, alert_type, severity, message),
+                (alert_id, user_id, alert_type, severity, message),
             )
             conn.commit()
+        return alert_id
+
+    def has_open_alert(self, user_id: str, alert_type: str) -> bool:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT 1 FROM alert_events
+                WHERE user_id = ? AND alert_type = ? AND status = 'open' LIMIT 1
+                """,
+                (user_id, alert_type),
+            )
+            return cursor.fetchone() is not None
+
+    def has_recent_alert(
+        self, user_id: str, alert_type: str, hours: float = 12, status: str = None
+    ) -> bool:
+        cutoff = datetime.now() - timedelta(hours=hours)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            if status:
+                cursor.execute(
+                    """
+                    SELECT created_at FROM alert_events
+                    WHERE user_id = ? AND alert_type = ? AND status = ?
+                    ORDER BY created_at DESC LIMIT 8
+                    """,
+                    (user_id, alert_type, status),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT created_at FROM alert_events
+                    WHERE user_id = ? AND alert_type = ?
+                    ORDER BY created_at DESC LIMIT 8
+                    """,
+                    (user_id, alert_type),
+                )
+            for row in cursor.fetchall():
+                raw = row["created_at"]
+                if not raw:
+                    continue
+                try:
+                    dt = datetime.fromisoformat(str(raw).replace(" ", "T", 1))
+                except ValueError:
+                    continue
+                if dt >= cutoff:
+                    return True
+            return False
+
+    def mark_alert_external_notified(self, alert_id: str):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE alert_events SET external_notify_at = ? WHERE id = ?",
+                (datetime.now().isoformat(), alert_id),
+            )
+            conn.commit()
+
+    def get_open_unnotified_alert(self, user_id: str, alert_type: str) -> Optional[Dict]:
+        """Oldest open alert of this type that never had a successful external notify (retry path)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT * FROM alert_events
+                WHERE user_id = ? AND alert_type = ? AND status = 'open'
+                  AND (external_notify_at IS NULL OR TRIM(COALESCE(external_notify_at, '')) = '')
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                (user_id, alert_type),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def add_trusted_inbound_message(self, user_id: str, body: str, from_contact: str = None):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO trusted_inbound_messages (id, user_id, body, from_contact)
+                VALUES (?, ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), user_id, body, from_contact),
+            )
+            conn.commit()
+
+    def get_trusted_inbound_messages(self, user_id: str, unread_only: bool = False, limit: int = 20) -> List[Dict]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            if unread_only:
+                cursor.execute(
+                    """
+                    SELECT * FROM trusted_inbound_messages
+                    WHERE user_id = ? AND is_read = 0
+                    ORDER BY created_at DESC LIMIT ?
+                    """,
+                    (user_id, limit),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT * FROM trusted_inbound_messages
+                    WHERE user_id = ?
+                    ORDER BY created_at DESC LIMIT ?
+                    """,
+                    (user_id, limit),
+                )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def mark_trusted_inbound_read(self, user_id: str):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE trusted_inbound_messages SET is_read = 1 WHERE user_id = ? AND is_read = 0",
+                (user_id,),
+            )
+            conn.commit()
+
+    def find_user_ids_by_trusted_phone(self, phone_digits: str) -> List[str]:
+        """Match trusted_contacts.contact using normalized last-10-digit heuristic."""
+        target = "".join(c for c in (phone_digits or "") if c.isdigit())
+        if len(target) >= 10:
+            target = target[-10:]
+        if len(target) < 10:
+            return []
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id, contact FROM trusted_contacts")
+            matched = []
+            for row in cursor.fetchall():
+                c = "".join(ch for ch in (row["contact"] or "") if ch.isdigit())
+                if len(c) >= 10 and c[-10:] == target:
+                    matched.append(row["user_id"])
+            return matched
 
     def get_alerts(self, user_id: str = None, status: str = "open") -> List[Dict]:
         with sqlite3.connect(self.db_path) as conn:

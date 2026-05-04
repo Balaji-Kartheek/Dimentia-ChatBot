@@ -272,7 +272,8 @@ def render_support_page():
                             for i, m in enumerate(results[:3]):
                                 st.caption(f"{i+1}. {_short_text(m['text'], 160)}")
                         try:
-                            db.log_activity(username, "support_query", None, f"Q: {question[:80]}...")
+                            uid = st.session_state.get(SessionKeys.USER_ID)
+                            db.log_activity(uid or username, "support_query", None, f"Q: {question[:80]}...")
                         except Exception:
                             pass
                     except Exception as e:

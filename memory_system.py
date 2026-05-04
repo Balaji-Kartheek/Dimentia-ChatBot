@@ -70,7 +70,28 @@ class MemorySystem:
                 self._create_new_index()
         else:
             self._create_new_index()
-    
+        self._index_disk_mtime = self._index_files_mtime()
+
+    def _index_files_mtime(self) -> float:
+        index_file = FAISS_INDEX_PATH / "memory_index.faiss"
+        id_map_file = FAISS_INDEX_PATH / "memory_id_map.pkl"
+        mt = 0.0
+        for p in (index_file, id_map_file):
+            try:
+                if p.exists():
+                    mt = max(mt, p.stat().st_mtime)
+            except OSError:
+                pass
+        return mt
+
+    def _reload_index_if_changed_on_disk(self) -> None:
+        """Another process (e.g. Twilio webhook) may update FAISS on disk; pick it up without restart."""
+        mt = self._index_files_mtime()
+        if mt <= getattr(self, "_index_disk_mtime", 0):
+            return
+        logger.info("FAISS index updated on disk; reloading for search")
+        self.load_or_create_index()
+
     def _create_new_index(self):
         """Create a new FAISS index"""
         self.index = faiss.IndexFlatIP(self.embedding_dim)  # Inner product for cosine similarity
@@ -88,6 +109,7 @@ class MemorySystem:
             faiss.write_index(self.index, str(index_file))
             with open(id_map_file, 'wb') as f:
                 pickle.dump(self.memory_id_map, f)
+            self._index_disk_mtime = self._index_files_mtime()
             logger.info("Saved FAISS index to disk")
         except Exception as e:
             logger.error(f"Error saving index: {e}")
@@ -126,6 +148,7 @@ class MemorySystem:
     def search_memories(self, query: str, k: int = TOP_K_RESULTS,
                        language: str = None, user_id: str = None) -> List[Dict]:
         """Search for relevant memories using vector similarity with date awareness"""
+        self._reload_index_if_changed_on_disk()
         if self.index is None or self.embedding_model is None or self.index.ntotal == 0:
             return self._keyword_search_memories(query, k, language, user_id=user_id)
         

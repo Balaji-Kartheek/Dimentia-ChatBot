@@ -6,7 +6,8 @@ import hashlib
 import os
 import streamlit as st
 from datetime import datetime, timedelta
-from config import SessionKeys, FEATURE_FACE_AUTH, DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES
+from config import SessionKeys, FEATURE_FACE_AUTH, DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, INACTIVITY_ALERT_DAYS
+from alert_delivery import notify_trusted_for_alert
 from i18n import t, welcome_body
 from app_init import ensure_app_initialized
 from auth_service import AuthService
@@ -182,8 +183,9 @@ def render_home_page():
 
     user_id = st.session_state.get(SessionKeys.USER_ID)
     if user_id:
-        render_day_start_summary(components, db, user_id, language, username)
         maybe_create_inactivity_alert(db, user_id)
+        db.log_activity(user_id, "app_session", None, "home_page")
+        render_day_start_summary(components, db, user_id, language, username)
     
     
     # Recent memories for the selected interface language only (stored per-language)
@@ -463,6 +465,11 @@ def render_day_start_summary(components: dict, db, user_id: str, language: str, 
 
 
 def maybe_create_inactivity_alert(db, user_id: str):
+    """
+    If the last recorded activity is older than INACTIVITY_ALERT_DAYS, open one inactivity alert
+    and WhatsApp the trusted contact (when Twilio is configured). Notification is evaluated when the
+    app home page loads (patient or caregiver session).
+    """
     last_activity = db.get_last_activity(user_id)
     if not last_activity:
         return
@@ -470,10 +477,13 @@ def maybe_create_inactivity_alert(db, user_id: str):
         dt = datetime.fromisoformat(str(last_activity).replace(" ", "T"))
     except Exception:
         return
-    if datetime.now() - dt > timedelta(days=1):
-        db.create_alert(
-            user_id=user_id,
-            alert_type="inactivity",
-            severity=2,
-            message="No activity detected for more than 1 day. Please check on patient.",
-        )
+    if datetime.now() - dt <= timedelta(days=INACTIVITY_ALERT_DAYS):
+        return
+    if db.has_open_alert(user_id, "inactivity"):
+        return
+    msg = (
+        f"No app activity for more than {int(INACTIVITY_ALERT_DAYS)} day(s). "
+        "Please check on the patient."
+    )
+    aid = db.create_alert(user_id, "inactivity", msg, 3)
+    _ = notify_trusted_for_alert(db, user_id, aid, "inactivity", msg, 3)

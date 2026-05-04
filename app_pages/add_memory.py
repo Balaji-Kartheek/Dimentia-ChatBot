@@ -25,6 +25,12 @@ def render_add_memory_page():
     audio_processor = components['audio_processor']
     entity_extractor = components['entity_extractor']
     db = components['db']
+
+    _puid = st.session_state.get(SessionKeys.USER_ID)
+    if _puid:
+        from app_pages.home import maybe_create_inactivity_alert
+
+        maybe_create_inactivity_alert(db, _puid)
     
     user_role = st.session_state.get(SessionKeys.USER_ROLE, "user")
     username = st.session_state.get(SessionKeys.USERNAME, "")
@@ -74,13 +80,15 @@ def render_add_memory_page():
                     with col_verify:
                         if st.button("✅ Verify", key=f"verify_{memory['id']}", use_container_width=True):
                             memory_system.db.update_memory_caregiver_confirmed(memory['id'], True)
-                            db.log_activity(username, "verified_memory", memory['id'])
+                            uid = st.session_state.get(SessionKeys.USER_ID)
+                            db.log_activity(uid or username, "verified_memory", memory['id'])
                             st.success("Memory verified!")
                             st.rerun()
                     with col_delete:
                         if st.button("🗑️ Delete", key=f"delete_{memory['id']}", use_container_width=True):
                             memory_system.delete_memory(memory['id'])
-                            db.log_activity(username, "deleted_memory", memory['id'])
+                            uid = st.session_state.get(SessionKeys.USER_ID)
+                            db.log_activity(uid or username, "deleted_memory", memory['id'])
                             st.success("Memory deleted!")
                             st.rerun()
 
@@ -324,7 +332,7 @@ def save_memory(memory_system, db, text, source, entities, language, username):
         
         st.info(f"💾 Memory ID: {memory_id}")
         
-        db.log_activity(username, "added_memory", memory_id, f"Source: {source}")
+        db.log_activity(user_id or username, "added_memory", memory_id, f"Source: {source}")
         
         st.success("✅ Memory saved successfully!")
         st.balloons()

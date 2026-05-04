@@ -7,9 +7,37 @@ import csv
 import io
 import sqlite3
 from datetime import datetime, timedelta
-from config import SessionKeys, SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE
+from typing import List, Tuple
+
+import requests
+
+from config import (
+    SessionKeys,
+    SUPPORTED_LANGUAGES,
+    DEFAULT_LANGUAGE,
+    DEFAULT_SMS_COUNTRY_CODE,
+    TWILIO_WHATSAPP_FROM,
+)
 from auth_service import AuthService
 from i18n import t
+from trusted_messaging import twilio_configured
+
+
+def _ngrok_tunnel_status() -> Tuple[bool, List[str]]:
+    """Ngrok v3 local API: lists public URLs when `ngrok http …` is running."""
+    try:
+        r = requests.get("http://127.0.0.1:4040/api/tunnels", timeout=1.5)
+        if r.status_code != 200:
+            return False, []
+        tunnels = (r.json() or {}).get("tunnels") or []
+        urls = [
+            t.get("public_url")
+            for t in tunnels
+            if (t.get("public_url") or "").startswith("https://")
+        ]
+        return bool(urls), urls
+    except Exception:
+        return False, []
 
 
 def render_settings_page():
@@ -28,10 +56,11 @@ def render_settings_page():
     user_role = st.session_state.get(SessionKeys.USER_ROLE, "user")
     username = st.session_state.get(SessionKeys.USERNAME, "")
     
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         t(lang, "settings.tab_lang"),
         t(lang, "settings.tab_security"),
         t(lang, "settings.tab_data"),
+        t(lang, "settings.tab_trusted"),
         t(lang, "settings.tab_system"),
     ])
     
@@ -42,6 +71,8 @@ def render_settings_page():
     with tab3:
         render_data_management(memory_system, db, user_role)
     with tab4:
+        render_trusted_and_safety(db)
+    with tab5:
         render_system_settings(components)
 
 
@@ -229,28 +260,95 @@ def render_data_management(memory_system, db, user_role):
                         st.session_state["clear_confirmed"] = False
                         st.rerun()
 
-    st.markdown("##### Trusted Person & Safety Alerts")
-    user_id = st.session_state.get(SessionKeys.USER_ID)
-    if user_id:
-        trusted = db.get_trusted_contact(user_id)
-        if trusted:
-            st.caption(f"Trusted person: {trusted['name']} ({trusted.get('relation', 'contact')}) - {trusted['contact']}")
-        alerts = db.get_alerts(user_id=user_id, status="open")
-        if alerts:
-            for alert in alerts[:5]:
-                st.warning(f"[{alert['alert_type']}] {alert['message']}")
-        else:
-            st.info("No open safety alerts.")
 
-        if st.button("Generate Doctor Summary", key="doctor_summary_btn"):
-            summary = build_doctor_summary(db, user_id)
-            db.save_doctor_report(user_id, datetime.now().date().isoformat(), summary)
-            st.success("Doctor summary updated.")
-            st.text_area("Latest doctor summary", value=summary, height=180)
-        else:
-            latest = db.get_latest_doctor_report(user_id)
-            if latest:
-                st.text_area("Latest doctor summary", value=latest["summary"], height=180)
+def render_trusted_and_safety(db):
+    """Trusted contact, open alerts (with resolve), WhatsApp replies, doctor summary."""
+    lang = st.session_state.get(SessionKeys.SELECTED_LANGUAGE, DEFAULT_LANGUAGE)
+    st.markdown("#### Trusted person & safety alerts")
+    st.caption(
+        "Resolve alerts here when you are done with them. **Open** trusted_lookup alerts block a new WhatsApp "
+        "for the same type for several hours — resolving clears that so the next question can notify again."
+    )
+    user_id = st.session_state.get(SessionKeys.USER_ID)
+    if not user_id:
+        st.warning("Log in as a patient user to manage trusted contact and alerts.")
+        return
+
+    trusted = db.get_trusted_contact(user_id)
+    if trusted:
+        st.markdown(
+            f"**Trusted person:** {trusted['name']} ({trusted.get('relation', 'contact')}) — "
+            f"{trusted['contact']}"
+        )
+    else:
+        st.warning("No trusted contact on file. Add one at registration or ask an admin.")
+
+    st.markdown("##### Open alerts")
+    alerts = db.get_alerts(user_id=user_id, status="open")
+    if alerts:
+        if len(alerts) > 1 and st.button(
+            "Resolve all open alerts", type="secondary", key="resolve_all_open_alerts"
+        ):
+            for a in alerts:
+                db.mark_alert_resolved(a["id"])
+            st.rerun()
+        for alert in alerts[:12]:
+            aid = alert.get("id") or ""
+            col_a, col_b = st.columns([4, 1])
+            with col_a:
+                st.warning(
+                    f"**[{alert['alert_type']}]** severity {alert.get('severity', 1)} — "
+                    f"{alert.get('message', '')}"
+                )
+                st.caption(f"Created: {alert.get('created_at', '')}")
+            with col_b:
+                if st.button("Resolve", key=f"resolve_alert_{aid}", help="Mark this alert done; allows new notifications."):
+                    if aid:
+                        db.mark_alert_resolved(aid)
+                    st.rerun()
+    else:
+        st.info(
+            "No open alerts right now. Asking a **person question** without a strong memory match "
+            "(e.g. “Who is Kiran?”) creates a **trusted_lookup** alert and notifies your trusted contact when Twilio WhatsApp is configured."
+        )
+
+    st.markdown("##### Replies from trusted contact (WhatsApp)")
+    all_inbound = db.get_trusted_inbound_messages(user_id, unread_only=False, limit=25)
+    unread = [m for m in all_inbound if not int(m.get("is_read") or 0)]
+    if not all_inbound:
+        st.markdown("**Trusted person — how to answer**")
+        st.markdown(
+            "1. Open the **WhatsApp thread** from the Twilio sandbox / sender (the one that sent “From …”).\n"
+            "2. **Reply** with the answer in plain text.\n"
+            "3. It shows up here after the **System** tab shows Twilio + ngrok working (so Twilio can reach the app)."
+        )
+        st.caption("No replies saved yet.")
+    else:
+        if unread:
+            st.markdown("**Unread**")
+            for m in reversed(unread):
+                st.success(m.get("body", ""))
+                st.caption(str(m.get("created_at", "")))
+            if st.button("Mark all as read", key="mark_trusted_inbound_read"):
+                db.mark_trusted_inbound_read(user_id)
+                st.rerun()
+        read_only = [m for m in all_inbound if int(m.get("is_read") or 0)]
+        if read_only:
+            with st.expander(f"Earlier replies ({len(read_only)})", expanded=False):
+                for m in read_only[:20]:
+                    st.write(m.get("body", ""))
+                    st.caption(str(m.get("created_at", "")))
+
+    st.markdown("##### Doctor summary")
+    if st.button("Generate doctor summary", key="doctor_summary_btn"):
+        summary = build_doctor_summary(db, user_id)
+        db.save_doctor_report(user_id, datetime.now().date().isoformat(), summary)
+        st.success("Doctor summary updated.")
+        st.text_area("Latest doctor summary", value=summary, height=180)
+    else:
+        latest = db.get_latest_doctor_report(user_id)
+        if latest:
+            st.text_area("Latest doctor summary", value=latest["summary"], height=180)
 
 
 def render_system_settings(components):
@@ -262,13 +360,13 @@ def render_system_settings(components):
         try:
             llm_status = components['llm_integration'].test_connection()
             st.success("🟢 Gemini Connected" if llm_status else "🔴 Gemini Not Configured")
-        except:
+        except Exception:
             st.error("🔴 Gemini Error")
     with col2:
         try:
             audio_status = components['audio_processor'].test_audio_processing()
             st.success("🟢 Audio Ready" if audio_status else "🔴 Audio Error")
-        except:
+        except Exception:
             st.error("🔴 Audio Error")
     with col3:
         try:
@@ -276,8 +374,37 @@ def render_system_settings(components):
             if uid:
                 _ = components['db'].get_all_memories(language=slang, user_id=uid)
             st.success("🟢 Database Ready")
-        except:
+        except Exception:
             st.error("🔴 Database Error")
+
+    st.markdown("##### Trusted WhatsApp & tunnel (Twilio / ngrok)")
+    c4, c5 = st.columns(2)
+    with c4:
+        if twilio_configured():
+            st.success("🟢 Twilio WhatsApp credentials set")
+            st.caption(
+                f"Sender: `{TWILIO_WHATSAPP_FROM}`. Each trusted number must **join** the sandbox once "
+                "(WhatsApp **join your-code** to **+1 415-523-8886**; code from Twilio Console → Messaging → Try WhatsApp). "
+                f"10-digit trusted numbers use country code **`{DEFAULT_SMS_COUNTRY_CODE}`** from `.env`."
+            )
+            st.caption(
+                "**Inbound:** Twilio Messaging URL → `https://<ngrok>/sms/incoming` with `twilio_webhook.py` + `ngrok http 5001`."
+            )
+        else:
+            st.warning(
+                "🟡 Twilio WhatsApp not configured — set `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, "
+                "`TWILIO_WHATSAPP_FROM` in `.env`"
+            )
+    with c5:
+        ok, urls = _ngrok_tunnel_status()
+        if ok and urls:
+            st.success("🟢 Ngrok agent reachable (public tunnel active)")
+            for u in urls[:3]:
+                st.caption(f"Public URL: `{u}` — webhook path: `{u}/sms/incoming`")
+        else:
+            st.info(
+                "⚪ Ngrok not detected on `127.0.0.1:4040` — run `ngrok http 5001` while `twilio_webhook.py` listens on 5001."
+            )
 
 
 def export_memories(memory_system, db, user_id: str = None, language: str = None):

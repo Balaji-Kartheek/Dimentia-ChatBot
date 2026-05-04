@@ -71,6 +71,29 @@ FEATURE_DECAY_RANK = os.getenv("FEATURE_DECAY_RANK", "1") == "1"
 FEATURE_ADAPTIVE_MODE = os.getenv("FEATURE_ADAPTIVE_MODE", "1") == "1"
 PRIVATE_MODE = os.getenv("PRIVATE_MODE", "local")
 
+def _env_clean(key: str, default: str = "") -> str:
+    """Strip whitespace and optional wrapping quotes from .env values."""
+    v = (os.getenv(key, default) or default).strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        v = v[1:-1].strip()
+    return v
+
+
+# Trusted-contact alerts via Twilio WhatsApp only (sandbox or your approved WA sender).
+TWILIO_ACCOUNT_SID = _env_clean("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = _env_clean("TWILIO_AUTH_TOKEN")
+TWILIO_WHATSAPP_FROM = _env_clean("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+# When trusted contact is 10 digits without +, prepend this country code (no +). Default 91 (India).
+DEFAULT_SMS_COUNTRY_CODE = (_env_clean("DEFAULT_SMS_COUNTRY_CODE", "91") or "91").lstrip("+")
+
+# Safety thresholds
+INACTIVITY_ALERT_DAYS = float(os.getenv("INACTIVITY_ALERT_DAYS", "1"))
+# Keyword-search scores are overlap ratios (often below SIMILARITY_THRESHOLD).
+PERSON_QUERY_SIMILARITY_THRESHOLD = float(os.getenv("PERSON_QUERY_SIMILARITY_THRESHOLD", "0.42"))
+# Vector cosine scores are only returned if already >= SIMILARITY_THRESHOLD; stricter bar for "know this person?" questions.
+PERSON_QUERY_VECTOR_MIN_SIMILARITY = float(os.getenv("PERSON_QUERY_VECTOR_MIN_SIMILARITY", "0.82"))
+REPEATED_QUERY_ALERT_COOLDOWN_HOURS = float(os.getenv("REPEATED_QUERY_ALERT_COOLDOWN_HOURS", "18"))
+
 # Retrieval tuning
 DECAY_HALF_LIFE_DAYS = float(os.getenv("DECAY_HALF_LIFE_DAYS", "14"))
 DECAY_WEIGHT = float(os.getenv("DECAY_WEIGHT", "0.4"))
