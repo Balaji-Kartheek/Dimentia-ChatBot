@@ -379,6 +379,32 @@ class MemoryDatabase:
             conn.commit()
             return cursor.rowcount
 
+    def delete_query_events_for_user(self, user_id: str) -> int:
+        """Delete all stored question/query history for one user."""
+        if not user_id:
+            return 0
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM query_events WHERE user_id = ?", (user_id,))
+            conn.commit()
+            return cursor.rowcount
+
+    def delete_alerts_for_user(self, user_id: str, alert_type: Optional[str] = None) -> int:
+        """Delete alerts for one user; optionally filter by alert_type."""
+        if not user_id:
+            return 0
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            if alert_type:
+                cursor.execute(
+                    "DELETE FROM alert_events WHERE user_id = ? AND alert_type = ?",
+                    (user_id, alert_type),
+                )
+            else:
+                cursor.execute("DELETE FROM alert_events WHERE user_id = ?", (user_id,))
+            conn.commit()
+            return cursor.rowcount
+
     def increment_memory_reinforcement(self, memory_id: str):
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -674,6 +700,16 @@ class MemoryDatabase:
                 (user_id,),
             )
             conn.commit()
+
+    def delete_trusted_inbound_messages_for_user(self, user_id: str) -> int:
+        """Delete saved trusted-contact reply history for one user."""
+        if not user_id:
+            return 0
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM trusted_inbound_messages WHERE user_id = ?", (user_id,))
+            conn.commit()
+            return cursor.rowcount
 
     def find_user_ids_by_trusted_phone(self, phone_digits: str) -> List[str]:
         """Match trusted_contacts.contact using normalized last-10-digit heuristic."""

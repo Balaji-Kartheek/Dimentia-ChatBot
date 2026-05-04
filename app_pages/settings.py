@@ -252,6 +252,57 @@ def render_data_management(memory_system, db):
                         st.session_state["clear_confirmed"] = False
                         st.rerun()
 
+    st.markdown("---")
+    st.markdown("#### 🧹 Clear question history")
+    st.caption("Removes saved asked-questions history used for repeated-query detection.")
+
+    if "clear_queries_confirmed" not in st.session_state:
+        st.session_state["clear_queries_confirmed"] = False
+
+    if st.session_state.get("queries_cleared_success"):
+        st.success(st.session_state["queries_cleared_success"])
+        if st.button("OK", type="primary", key="dismiss_queries_cleared"):
+            del st.session_state["queries_cleared_success"]
+            st.rerun()
+    else:
+        if not st.session_state["clear_queries_confirmed"]:
+            if st.button("🧹 Clear Queries", type="secondary", key="start_clear_queries"):
+                st.session_state["clear_queries_confirmed"] = True
+                st.rerun()
+
+        if st.session_state["clear_queries_confirmed"]:
+            st.warning(
+                "This deletes all your saved asked-question history and repeated-query alerts. "
+                "It cannot be undone."
+            )
+            auth = AuthService(db)
+            user_id = st.session_state.get(SessionKeys.USER_ID)
+            username = st.session_state.get(SessionKeys.USERNAME, "")
+            reauth_password = st.text_input(
+                "Enter your password to confirm",
+                type="password",
+                key="clear_queries_reauth_password",
+            )
+            confirmed = st.checkbox(
+                "I understand this will reset repeated-query tracking.",
+                key="clear_queries_understand_check",
+            )
+
+            if confirmed:
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("Confirm Clear Queries", type="primary", key="confirm_clear_queries"):
+                        user = db.get_user_by_username(username)
+                        password_ok = bool(user and auth.verify_password(reauth_password, user["password_hash"]))
+                        if password_ok and user_id:
+                            clear_all_queries(db, user_id)
+                        else:
+                            st.error(t(lang, "settings.clear_bad_password"))
+                with col2:
+                    if st.button("Cancel", type="secondary", key="cancel_clear_queries"):
+                        st.session_state["clear_queries_confirmed"] = False
+                        st.rerun()
+
 
 def render_trusted_and_safety(db):
     """Trusted contact, open alerts (with resolve), WhatsApp replies, doctor summary."""
@@ -593,6 +644,58 @@ def clear_all_memories(memory_system, db, user_id: str):
         st.rerun()
     except Exception as e:
         st.error(f"Error clearing memories: {e}")
+
+
+def clear_all_queries(db, user_id: str):
+    """Delete query history, repeated-query alerts, and trusted replies for this user."""
+    try:
+        if not user_id:
+            st.error("Not signed in; cannot clear queries.")
+            return
+        if hasattr(db, "delete_query_events_for_user"):
+            query_count = db.delete_query_events_for_user(user_id)
+        else:
+            path = getattr(db, "db_path", None)
+            if not path:
+                st.error("Database is not configured correctly.")
+                return
+            with sqlite3.connect(path) as conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM query_events WHERE user_id = ?", (user_id,))
+                conn.commit()
+                query_count = cur.rowcount
+
+        if hasattr(db, "delete_alerts_for_user"):
+            alert_count = db.delete_alerts_for_user(user_id, alert_type="repeated_query")
+        else:
+            path = getattr(db, "db_path", None)
+            with sqlite3.connect(path) as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "DELETE FROM alert_events WHERE user_id = ? AND alert_type = ?",
+                    (user_id, "repeated_query"),
+                )
+                conn.commit()
+                alert_count = cur.rowcount
+
+        if hasattr(db, "delete_trusted_inbound_messages_for_user"):
+            reply_count = db.delete_trusted_inbound_messages_for_user(user_id)
+        else:
+            path = getattr(db, "db_path", None)
+            with sqlite3.connect(path) as conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM trusted_inbound_messages WHERE user_id = ?", (user_id,))
+                conn.commit()
+                reply_count = cur.rowcount
+
+        st.session_state["queries_cleared_success"] = (
+            f"Cleared {query_count} question history record(s), {alert_count} repeated-query alert(s), "
+            f"and {reply_count} trusted-contact reply record(s)."
+        )
+        st.session_state["clear_queries_confirmed"] = False
+        st.rerun()
+    except Exception as e:
+        st.error(f"Error clearing query history: {e}")
 
 
 def build_doctor_summary(db, user_id: str) -> str:
